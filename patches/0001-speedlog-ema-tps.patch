@@ -1,0 +1,248 @@
+diff --git a/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/ChatMessageStatistics.svelte b/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/ChatMessageStatistics.svelte
+index 1358f01..d99d8aa 100644
+--- a/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/ChatMessageStatistics.svelte
++++ b/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/ChatMessageStatistics.svelte
+@@ -5,8 +5,10 @@
+ 	import { DEFAULT_PERFORMANCE_TIME, MS_PER_SECOND } from '$lib/constants';
+ 	import { ChatMessageStatisticsMode, ChatMessageStatsView } from '$lib/enums';
+ 	import type { ChatMessageAgenticTimings } from '$lib/types/chat';
++	import { modelsStore } from '$lib/stores';
+ 	import { formatPerformanceTime } from '$lib/utils';
+ 	import type { Component } from 'svelte';
++	import SpeedLog from './SpeedLog.svelte';
+ 
+ 	interface Props {
+ 		predictedTokens?: number;
+@@ -124,6 +126,26 @@
+ 	);
+ 
+ 	let formattedAgenticTotalTime = $derived(formatPerformanceTime(agenticTotalTimeMs));
++
++	let speedLogRef: SpeedLog | undefined = $state(undefined);
++	let hasRecorded = $state(false);
++
++	// Record one entry per finished response. hasRecorded stops the effect from
++	// adding the same response again on a later re-run.
++	$effect(() => {
++		if (hasRecorded || isLive || !speedLogRef) return;
++		if (!hasGenerationStats || !predictedTokens || !predictedMs) return;
++
++		speedLogRef.record({
++			model: modelsStore.selectedModelName ?? modelsStore.singleModelName ?? 'unknown',
++			promptTokens: promptTokens ?? 0,
++			promptTps:
++				promptTokens && promptMs && promptMs > 0 ? (promptTokens / promptMs) * MS_PER_SECOND : 0,
++			tokens: predictedTokens,
++			tps: (predictedTokens / predictedMs) * MS_PER_SECOND
++		});
++		hasRecorded = true;
++	});
+ </script>
+ 
+ {#snippet viewButton(opts: {
+@@ -291,3 +313,5 @@
+ 		{/if}
+ 	</div>
+ </div>
++
++<SpeedLog bind:this={speedLogRef} />
+diff --git a/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/SpeedLog.svelte b/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/SpeedLog.svelte
+new file mode 100644
+index 0000000..2f059cb
+--- /dev/null
++++ b/tools/ui/src/lib/components/app/chat/ChatMessages/ChatMessageStatistics/SpeedLog.svelte
+@@ -0,0 +1,133 @@
++<script lang="ts">
++	import { Activity, ChevronDown, ChevronUp } from '@lucide/svelte';
++
++	interface SpeedEntry {
++		ts: number;
++		model: string;
++		tokens: number;
++		tps: number;
++		promptTokens: number;
++		promptTps: number;
++	}
++
++	const MAX_ENTRIES = 50;
++	const STORAGE_KEY = 'bonsai_speed_log';
++
++	let expanded = $state(false);
++	let entries = $state<SpeedEntry[]>(loadLog());
++
++	function loadLog(): SpeedEntry[] {
++		if (typeof window === 'undefined') return [];
++
++		try {
++			const raw = window.sessionStorage.getItem(STORAGE_KEY);
++
++			return raw ? (JSON.parse(raw) as SpeedEntry[]) : [];
++		} catch {
++			return [];
++		}
++	}
++
++	function saveLog(log: SpeedEntry[]) {
++		if (typeof window === 'undefined') return;
++
++		try {
++			window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(log));
++		} catch {
++			// sessionStorage can be unavailable or full; the log is best-effort
++		}
++	}
++
++	export function record(entry: Omit<SpeedEntry, 'ts'>) {
++		if (!entry.tps || entry.tps <= 0 || !entry.tokens) return;
++
++		const next = [{ ...entry, ts: Date.now() }, ...entries].slice(0, MAX_ENTRIES);
++
++		entries = next;
++		saveLog(next);
++	}
++
++	export function clear() {
++		entries = [];
++		saveLog([]);
++	}
++
++	function fmt(n: number, dec = 1) {
++		return n.toFixed(dec);
++	}
++
++	function fmtTime(ts: number) {
++		return new Date(ts).toLocaleTimeString([], {
++			hour: '2-digit',
++			minute: '2-digit',
++			second: '2-digit'
++		});
++	}
++
++	let avgTps = $derived.by(() => {
++		if (!entries.length) return 0;
++
++		return entries.reduce((s, e) => s + e.tps, 0) / entries.length;
++	});
++
++	let peakTps = $derived(entries.length ? Math.max(...entries.map((e) => e.tps)) : 0);
++</script>
++
++{#if entries.length > 0}
++	<div class="mt-1 text-xs text-muted-foreground">
++		<button
++			class="flex items-center gap-1 hover:text-foreground transition-colors"
++			onclick={() => (expanded = !expanded)}
++		>
++			<Activity class="h-3 w-3" />
++			<span>Speed log · avg {fmt(avgTps)} t/s · peak {fmt(peakTps)} t/s</span>
++			{#if expanded}
++				<ChevronUp class="h-3 w-3" />
++			{:else}
++				<ChevronDown class="h-3 w-3" />
++			{/if}
++		</button>
++
++		{#if expanded}
++			<div class="mt-1 rounded-lg border border-border/30 bg-muted/20 overflow-hidden">
++				<table class="w-full text-[11px]">
++					<thead>
++						<tr class="border-b border-border/30 text-muted-foreground/70">
++							<th class="px-2 py-1 text-left font-medium">Time</th>
++							<th class="px-2 py-1 text-left font-medium">Model</th>
++							<th class="px-2 py-1 text-right font-medium">Tokens</th>
++							<th class="px-2 py-1 text-right font-medium">Gen t/s</th>
++							<th class="px-2 py-1 text-right font-medium">Prompt t/s</th>
++						</tr>
++					</thead>
++					<tbody>
++						{#each entries as e}
++							<tr class="border-b border-border/20 last:border-0 hover:bg-muted/30 transition-colors">
++								<td class="px-2 py-1 text-muted-foreground/60">{fmtTime(e.ts)}</td>
++								<td class="px-2 py-1 max-w-[10rem] truncate" title={e.model}>{e.model}</td>
++								<td class="px-2 py-1 text-right">{e.tokens}</td>
++								<td
++									class="px-2 py-1 text-right font-mono
++									{e.tps > 80 ? 'text-green-400' : e.tps > 40 ? 'text-amber-400' : 'text-red-400'}"
++								>
++									{fmt(e.tps)}
++								</td>
++								<td class="px-2 py-1 text-right font-mono text-muted-foreground">
++									{e.promptTps > 0 ? fmt(e.promptTps) : '—'}
++								</td>
++							</tr>
++						{/each}
++					</tbody>
++				</table>
++				<div class="flex justify-end px-2 py-1 border-t border-border/20">
++					<button
++						class="text-[10px] text-muted-foreground/50 hover:text-muted-foreground"
++						onclick={clear}
++					>
++						Clear log
++					</button>
++				</div>
++			</div>
++		{/if}
++	</div>
++{/if}
+diff --git a/tools/ui/src/lib/hooks/use-processing-state.svelte.ts b/tools/ui/src/lib/hooks/use-processing-state.svelte.ts
+index 8a6f332..c3241c0 100644
+--- a/tools/ui/src/lib/hooks/use-processing-state.svelte.ts
++++ b/tools/ui/src/lib/hooks/use-processing-state.svelte.ts
+@@ -36,6 +36,16 @@ export function useProcessingState(): UseProcessingStateReturn {
+ 	let lastKnownState = $state<ApiProcessingState | null>(null);
+ 	let lastKnownProcessingStats = $state<LiveProcessingStats | null>(null);
+ 
++	// The server reports a cumulative average. One slow token, for example a
++	// 160 ms token in a 7 ms stream, drags the whole response down with it.
++	// Smooth the displayed value so a single outlier does not collapse it.
++	// These are deliberately plain variables, not $state: they are an
++	// implementation detail of the getter below and must not trigger renders.
++	const TPS_EMA_ALPHA = 0.25;
++	let smoothedTps = 0;
++	let smoothedForCount = -1;
++	let lastDecodedCount = 0;
++
+ 	// Derive processing state reactively from chatStore's direct state
+ 	const processingState = $derived.by(() => {
+ 		if (!isMonitoring) {
+@@ -296,14 +306,35 @@ export function useProcessingState(): UseProcessingStateReturn {
+ 
+ 		if (tokensDecoded <= 0) return null;
+ 
+-		// Calculate time from tokens and speed
+-		const timeMs =
+-			tokensPerSecond && tokensPerSecond > 0 ? (tokensDecoded / tokensPerSecond) * 1000 : 0;
++		// A lower count than last time means a new response started.
++		if (tokensDecoded < lastDecodedCount) {
++			smoothedTps = 0;
++			smoothedForCount = -1;
++		}
++		lastDecodedCount = tokensDecoded;
++
++		let displayTps = tokensPerSecond || 0;
++
++		// The first token reports almost no elapsed time, so its speed is noise.
++		if (tokensDecoded > 1 && displayTps > 0) {
++			// Recompute only when the token count advances, so repeated calls
++			// during one render return the same value.
++			if (smoothedForCount !== tokensDecoded) {
++				smoothedTps =
++					smoothedTps === 0
++						? displayTps
++						: TPS_EMA_ALPHA * displayTps + (1 - TPS_EMA_ALPHA) * smoothedTps;
++				smoothedForCount = tokensDecoded;
++			}
++			displayTps = smoothedTps;
++		}
++
++		const timeMs = displayTps > 0 ? (tokensDecoded / displayTps) * 1000 : 0;
+ 
+ 		return {
+ 			timeMs,
+ 			tokensGenerated: tokensDecoded,
+-			tokensPerSecond: tokensPerSecond || 0
++			tokensPerSecond: displayTps
+ 		};
+ 	}
+ 

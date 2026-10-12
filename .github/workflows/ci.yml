@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: shellcheck --version && shellcheck -x scripts/*.sh scripts/lib/*.sh tests/run.sh setup.sh
+
+  test:
+    name: tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the test suite
+        run: ./tests/run.sh
+
+      - name: Verify the UI patch applies to the pinned commit
+        run: ./tests/run.sh --with-patch
+
+      - name: Verify the pinned release is reachable
+        run: ./tests/run.sh --with-network
+
+  patch-build:
+    name: patched UI build
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch the pinned source and apply the patch
+        run: |
+          git init -q src
+          git -C src remote add origin "https://github.com/PrismML-Eng/llama.cpp.git"
+          git -C src fetch --depth 1 origin "$(grep -oP 'PRISM_COMMIT_FULL="\$\{PRISM_COMMIT_FULL:-\K[0-9a-f]+' scripts/lib/common.sh)"
+          git -C src checkout -q --detach FETCH_HEAD
+          git -C src apply patches/0001-speedlog-ema-tps.patch
+
+      - name: Build the patched UI
+        working-directory: src/tools/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npx svelte-kit sync
+          npx svelte-check --tsconfig ./tsconfig.json
+          npx vite build
+
+      - name: Confirm the speed log is in the built bundle
+        run: |
+          if grep -rqs "bonsai_speed_log" src/tools/ui/dist; then
+            echo "speed-log UI patch present in the built bundle"
+          else
+            echo "::error::speed-log UI patch missing from the built bundle"
+            exit 1
+          fi

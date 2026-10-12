@@ -1,0 +1,37 @@
+Ikaros-bonsai-server
+Copyright (c) 2026 Ikaros Digital
+
+This project does not contain or redistribute the llama.cpp source tree.
+It orchestrates upstream artifacts and adds original tooling on top.
+
+Third-party components
+----------------------
+
+llama.cpp and ggml
+  Copyright (c) 2023-2026 The ggml authors
+  License: MIT
+  https://github.com/ggml-org/llama.cpp
+
+PrismML fork of llama.cpp (branch `prism`)
+  License: MIT
+  https://github.com/PrismML-Eng/llama.cpp
+  Provides the low-bit formats (Q1_0, Q2_0, PQ2_0, PTQ1_0) used by the Bonsai
+  family of models.
+
+Bonsai-demo
+  Copyright (c) PrismML
+  License: Apache-2.0
+  https://github.com/PrismML-Eng/Bonsai-demo
+  Referenced for backend/asset resolution behaviour and backend support
+  documentation. No code is copied verbatim; the detection logic here was
+  written independently and generalised.
+
+Bonsai model weights
+  Published by prism-ml and various community authors on Hugging Face.
+  Model licenses vary per repository and are not covered by this project's
+  MIT license. Check the model card before redistributing weights.
+
+Downloaded binaries
+  Prebuilt binaries fetched by `scripts/fetch-binary.sh` come from the
+  PrismML-Eng/llama.cpp GitHub releases and remain under the MIT license of
+  that project. They are downloaded at runtime, not redistributed here.

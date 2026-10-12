@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# tests/run.sh - dependency-free test suite for Ikaros Bonsai server.
+#
+# Covers backend/asset selection against fixture hardware profiles, catalog
+# integrity, quant-format gating, and helper correctness. Runs with plain bash:
+# no bats, no network.
+#
+# Usage:
+#   ./tests/run.sh                 run everything except the network tests
+#   ./tests/run.sh --with-network  also verify the pinned release is reachable
+#   ./tests/run.sh --with-patch    also verify the UI patch applies
+
+set -uo pipefail
+
+TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
+SCRIPTS="$REPO_ROOT/scripts"
+FIXTURES="$TESTS_DIR/fixtures"
+
+WITH_NETWORK=0
+WITH_PATCH=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-network) WITH_NETWORK=1 ;;
+        --with-patch)   WITH_PATCH=1 ;;
+        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+# shellcheck source=../scripts/lib/common.sh
+. "$SCRIPTS/lib/common.sh"
+
+PASS=0
+FAIL=0
+
+pass() { PASS=$((PASS + 1)); printf '  \033[32mok\033[0m   %s\n' "$1"; }
+fail() {
+    FAIL=$((FAIL + 1))
+    printf '  \033[31mFAIL\033[0m %s\n' "$1"
+    [ -n "${2:-}" ] && printf '       %s\n' "$2"
+}
+
+group() { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
+
+# assert_eq LABEL EXPECTED ACTUAL
+assert_eq() {
+    if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$2', got '$3'"; fi
+}
+
+# assert_contains LABEL HAYSTACK NEEDLE
+assert_contains() {
+    case "$2" in
+        *"$3"*) pass "$1" ;;
+        *) fail "$1" "'$3' not found in output" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# detect.sh against fixture hardware
+# ---------------------------------------------------------------------------
+
+# detect_with VAR=VAL ... - run detect.sh in a temp state dir, print detect.env.
+detect_with() {
+    _tmp="$(mktemp -d)"
+    env BONSAI_STATE_DIR="$_tmp" BONSAI_FAKE_CPUINFO="$FIXTURES/cpuinfo-noavx512.txt" "$@" \
+        "$SCRIPTS/detect.sh" >/dev/null 2>&1
+    _rc=$?
+    [ -f "$_tmp/detect.env" ] && cat "$_tmp/detect.env"
+    rm -rf "$_tmp"
+    return $_rc
+}
+
+# field OFFSET OUTPUT - print the value of a key from detect.env output.
+field() {
+    printf '%s\n' "$2" | sed -n "s/^$1='\(.*\)'$/\1/p" | head -1
+}
+
+group "backend selection"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    BONSAI_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 BONSAI_FAKE_ROCM_VERSION=7.2.3 \
+    BONSAI_FAKE_ROCM_GFX=gfx1200 BONSAI_FAKE_VRAM_BYTES=17179869184)"
+assert_eq "AMD + ROCm 7.2 -> rocm backend" "rocm" "$(field BACKEND "$OUT")"
+assert_eq "AMD + ROCm 7.2 -> rocm 7.2 asset" \
+    "llama-prism-b10772-e8fd209-bin-ubuntu-rocm-7.2-x64.tar.gz" "$(field ASSET "$OUT")"
+assert_eq "gfx1200 is a covered target" "1" "$(field GFX_SUPPORTED "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    BONSAI_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 BONSAI_FAKE_ROCM_VERSION=7.2.3 \
+    BONSAI_FAKE_ROCM_GFX=gfx906)"
+assert_eq "uncovered gfx target is flagged" "0" "$(field GFX_SUPPORTED "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    BONSAI_FAKE_ROCM_PREFIX=/opt/rocm-6.5.0 BONSAI_FAKE_ROCM_VERSION=6.5.0 \
+    BONSAI_FAKE_ROCM_GFX=gfx1100 BONSAI_FAKE_VULKAN=0)"
+assert_eq "ROCm version mismatch, no Vulkan -> cpu" "cpu" "$(field BACKEND "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    BONSAI_FAKE_ROCM_PREFIX=/opt/rocm-6.5.0 BONSAI_FAKE_ROCM_VERSION=6.5.0 \
+    BONSAI_FAKE_ROCM_GFX=gfx1100 BONSAI_FAKE_VULKAN=1)"
+assert_eq "ROCm version mismatch, Vulkan present -> vulkan" "vulkan" "$(field BACKEND "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-nvidia.txt" \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_VULKAN=0 BONSAI_FAKE_NVIDIA_SMI="$FIXTURES/nvidia-smi-cuda128.txt")"
+assert_eq "NVIDIA + CUDA 12.8 -> cuda" "cuda" "$(field BACKEND "$OUT")"
+assert_eq "CUDA 12.8 maps to the 12.8 asset" \
+    "llama-prism-b10772-e8fd209-bin-linux-cuda-12.8-x64.tar.gz" "$(field ASSET "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-nvidia.txt" \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_VULKAN=0 BONSAI_FAKE_NVIDIA_SMI="$FIXTURES/nvidia-smi-cuda133.txt")"
+assert_eq "CUDA 13.3 maps to the 13.3 asset" \
+    "llama-prism-b10772-e8fd209-bin-linux-cuda-13.3-x64.tar.gz" "$(field ASSET "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-nvidia.txt" \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_VULKAN=0 BONSAI_FAKE_NVIDIA_SMI="$FIXTURES/nvidia-smi-cuda124.txt")"
+assert_eq "CUDA 12.4 maps to the 12.4 asset" \
+    "llama-prism-b10772-e8fd209-bin-linux-cuda-12.4-x64.tar.gz" "$(field ASSET "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-intel.txt" BONSAI_FAKE_VULKAN=0)"
+assert_eq "Intel iGPU, no Vulkan -> cpu" "cpu" "$(field BACKEND "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" BONSAI_FAKE_VULKAN=1)"
+assert_eq "no GPU, Vulkan present -> vulkan" "vulkan" "$(field BACKEND "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" BONSAI_FAKE_VULKAN=0)"
+assert_eq "no GPU, no Vulkan -> cpu" "cpu" "$(field BACKEND "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=aarch64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-nvidia.txt" \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_NVIDIA_SMI="$FIXTURES/nvidia-smi-cuda128.txt" BONSAI_FAKE_VULKAN=0)"
+assert_eq "arm64 + CUDA has no asset, falls back to cpu" "cpu" "$(field BACKEND "$OUT")"
+assert_eq "arm64 cpu asset" \
+    "llama-prism-b10772-e8fd209-bin-ubuntu-arm64.tar.gz" "$(field ASSET "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=aarch64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" BONSAI_FAKE_VULKAN=1)"
+assert_eq "arm64 Vulkan asset" \
+    "llama-prism-b10772-e8fd209-bin-ubuntu-vulkan-arm64.tar.gz" "$(field ASSET "$OUT")"
+
+group "overrides and failures"
+
+OUT="$(detect_with BACKEND=cpu BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    BONSAI_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 BONSAI_FAKE_ROCM_VERSION=7.2.3 \
+    BONSAI_FAKE_ROCM_GFX=gfx1200)"
+assert_eq "BACKEND=cpu overrides detection" "cpu" "$(field BACKEND "$OUT")"
+
+if detect_with BACKEND=cuda BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=aarch64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-nvidia.txt" \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_NVIDIA_SMI="$FIXTURES/nvidia-smi-cuda128.txt" >/dev/null; then
+    fail "forced cuda on arm64 should fail"
+else
+    pass "forced cuda on arm64 fails with a clear error"
+fi
+
+if detect_with BACKEND=nonsense BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" >/dev/null; then
+    fail "unknown backend should fail"
+else
+    pass "unknown backend fails"
+fi
+
+group "AVX512 detection"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" BONSAI_FAKE_VULKAN=0 \
+    BONSAI_FAKE_CPUINFO="$FIXTURES/cpuinfo-avx512.txt")"
+assert_eq "AVX512 reported present" "1" "$(field AVX512 "$OUT")"
+
+OUT="$(detect_with BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" BONSAI_FAKE_VULKAN=0 \
+    BONSAI_FAKE_CPUINFO="$FIXTURES/cpuinfo-noavx512.txt")"
+assert_eq "AVX512 reported absent" "0" "$(field AVX512 "$OUT")"
+
+group "json output"
+
+_tmp="$(mktemp -d)"
+_json="$(env BONSAI_STATE_DIR="$_tmp" BONSAI_FAKE_ROCM_PREFIX= BONSAI_FAKE_LSPCI="$FIXTURES/lspci-empty.txt" \
+    BONSAI_FAKE_VULKAN=0 BONSAI_FAKE_UNAME_S=Linux BONSAI_FAKE_UNAME_M=x86_64 \
+    "$SCRIPTS/detect.sh" --json 2>/dev/null)"
+rm -rf "$_tmp"
+assert_contains "json output is valid-looking" "$_json" '"backend": "cpu"'
+if printf '%s' "$_json" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    pass "json output parses"
+else
+    fail "json output does not parse" "$_json"
+fi
+
+group "catalog integrity"
+
+_rows="$(grep -v '^[[:space:]]*#' "$SCRIPTS/models.catalog" | grep -v '^[[:space:]]*$')"
+_bad=""
+_dupes=""
+_seen=""
+_n=0
+while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _n=$((_n + 1))
+    _fields="$(printf '%s' "$_line" | awk -F'|' '{print NF}')"
+    [ "$_fields" = "6" ] || _bad="$_bad
+  line $_n has $_fields fields: $_line"
+    _key="$(printf '%s' "$_line" | cut -d'|' -f1,2)"
+    case "$_seen" in
+        *"|$_key|"*) _dupes="$_dupes
+  duplicate: $_key" ;;
+    esac
+    _seen="$_seen|$_key|"
+    _file="$(printf '%s' "$_line" | cut -d'|' -f2)"
+    if ! quant_supported "$_file"; then
+        _bad="$_bad
+  line $_n lists an unsupported format: $_file"
+    fi
+done <<EOF
+$_rows
+EOF
+
+assert_eq "catalog rows parsed" "1" "$([ "$_n" -gt 20 ] && echo 1 || echo 0)"
+if [ -z "$_bad" ]; then
+    pass "every catalog row has 6 fields and a supported format"
+else
+    fail "catalog problems:$_bad"
+fi
+if [ -z "$_dupes" ]; then
+    pass "no duplicate repo+file entries"
+else
+    fail "duplicates:$_dupes"
+fi
+
+group "quant format gating"
+
+for f in model-mlx-2bit.gguf x-gsq-rco.gguf y-ninfer-v3.gguf z-awq-4bit.gguf; do
+    if quant_supported "$f"; then fail "should reject $f"; else pass "rejects $f"; fi
+done
+for f in Ternary-Bonsai-2-27B-PQ2_0.gguf model-PTQ1_0.gguf Bonsai-8B-Q1_0.gguf \
+         x-Q2_0_g64.gguf y-Q4_K_M.gguf; do
+    if quant_supported "$f"; then pass "accepts $f"; else fail "should accept $f"; fi
+done
+
+assert_eq "quant label PQ2_0" "PQ2_0 (2.1 bpw)" "$(quant_label a-PQ2_0.gguf)"
+assert_eq "quant label PTQ1_0" "PTQ1_0 (1.75 bpw)" "$(quant_label a-PTQ1_0.gguf)"
+assert_eq "quant label Q1_0" "Q1_0 (1-bit)" "$(quant_label a-Q1_0.gguf)"
+assert_eq "quant label mmproj" "vision projector" "$(quant_label a-mmproj-BF16.gguf)"
+if quant_needs_vulkan_warning a-PQ2_0.gguf; then
+    pass "PQ2_0 triggers the Vulkan warning"
+else
+    fail "PQ2_0 should trigger the Vulkan warning"
+fi
+
+group "helpers"
+
+if version_ge 12.8 12.8; then pass "version_ge equal"; else fail "version_ge equal"; fi
+if version_ge 13.3 12.8; then pass "version_ge greater"; else fail "version_ge greater"; fi
+if version_ge 12.4 12.8; then fail "version_ge lesser"; else pass "version_ge lesser"; fi
+if version_ge 7.2.3 7.2; then pass "version_ge patch suffix"; else fail "version_ge patch suffix"; fi
+assert_eq "human_size GB" "1.5 GB" "$(human_size 1610612736)"
+assert_eq "human_size MB" "237 MB" "$(human_size 248512512)"
+
+group "script syntax"
+
+_syntax_fail=""
+for f in "$SCRIPTS"/*.sh "$SCRIPTS"/lib/*.sh "$REPO_ROOT/setup.sh" "$TESTS_DIR"/run.sh; do
+    [ -f "$f" ] || continue
+    bash -n "$f" 2>/dev/null || _syntax_fail="$_syntax_fail
+  $f"
+done
+if [ -z "$_syntax_fail" ]; then
+    pass "all scripts parse"
+else
+    fail "syntax errors:$_syntax_fail"
+fi
+
+group "help output"
+
+for f in detect fetch-binary get-models start-server stop-server hermes-wire \
+         install-service build-from-source; do
+    if "$SCRIPTS/$f.sh" --help >/dev/null 2>&1; then
+        pass "$f.sh --help"
+    else
+        fail "$f.sh --help"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Optional checks
+# ---------------------------------------------------------------------------
+
+if [ "$WITH_PATCH" = 1 ]; then
+    group "UI patch"
+    if ! command -v git >/dev/null 2>&1; then
+        fail "git not available"
+    else
+        _work="$(mktemp -d)"
+        _src="${BONSAI_TEST_SRC:-}"
+        if [ -z "$_src" ]; then
+            _src="$_work/src"
+            git init -q "$_src"
+            git -C "$_src" remote add origin "https://github.com/$PRISM_REPO.git"
+            git -C "$_src" fetch -q --depth 1 origin "$PRISM_COMMIT_FULL" 2>/dev/null
+            git -C "$_src" checkout -q --detach FETCH_HEAD 2>/dev/null
+        fi
+        if [ -d "$_src/.git" ]; then
+            if git -C "$_src" apply --check "$REPO_ROOT/patches/0001-speedlog-ema-tps.patch"; then
+                pass "patch applies to $PRISM_COMMIT"
+            else
+                fail "patch does not apply to $PRISM_COMMIT"
+            fi
+        else
+            fail "could not fetch the pinned source"
+        fi
+        rm -rf "$_work"
+    fi
+fi
+
+if [ "$WITH_NETWORK" = 1 ]; then
+    group "network"
+    # Release assets redirect to a CDN that does not answer HEAD, so fetch a
+    # single byte range instead.
+    _asset="llama-$PRISM_RELEASE-bin-ubuntu-x64.tar.gz"
+    _url="https://github.com/$PRISM_REPO/releases/download/$PRISM_RELEASE/$_asset"
+    _code="$(curl -sL -o /dev/null -w '%{http_code}' -r 0-0 "$_url" 2>/dev/null)"
+    if [ "$_code" = "200" ] || [ "$_code" = "206" ]; then
+        pass "pinned release is reachable (HTTP $_code)"
+    else
+        fail "pinned release $PRISM_RELEASE not reachable" "HTTP $_code"
+    fi
+    if hf_tree prism-ml/Bonsai-1.7B-gguf >/dev/null 2>&1; then
+        pass "Hugging Face API reachable"
+    else
+        fail "Hugging Face API not reachable"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+
+printf '\n\033[1m%s passed, %s failed\033[0m\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

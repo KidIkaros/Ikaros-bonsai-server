@@ -1,0 +1,1 @@
+| NVIDIA-SMI 570.86.10    Driver Version: 570.86.10    CUDA Version: 12.8     |

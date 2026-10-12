@@ -1,0 +1,1 @@
+00:00.0 Host bridge: Intel Corporation Device a700 (rev 01)

@@ -1,0 +1,1 @@
+| NVIDIA-SMI 580.65.06    Driver Version: 580.65.06    CUDA Version: 13.3     |

@@ -1,0 +1,74 @@
+# Ikaros Bonsai model catalog
+#
+# Fields (pipe separated):
+#   repo | file | size_gb | min_vram_gb | min_ram_gb | tags
+#
+# size_gb is the on-disk size. min_vram_gb / min_ram_gb are guidance for
+# comfortable inference at the default 65536 context, not hard limits.
+#
+# Tags are free-form and used for filtering and for the hardware-based
+# recommendation. A "0" in min_vram_gb means the file is an auxiliary asset
+# (a vision projector) that is loaded alongside a model, not run on its own.
+#
+# Only formats the pinned PrismML fork can actually load are listed here.
+# See docs/MODELS.md for the compatibility matrix and for formats that are
+# deliberately excluded (MLX, GSQ-RCO, NInfer, AWQ).
+#
+# Community entries are unvalidated by upstream. They are listed because they
+# exist and are popular, not because they have been tested by this project.
+
+# ---------------------------------------------------------------------------
+# Official prism-ml - Bonsai 2 (ternary), current generation
+# ---------------------------------------------------------------------------
+
+prism-ml/Ternary-Bonsai-2-27B-gguf|Ternary-Bonsai-2-27B-PQ2_0.gguf|7.21|14|18|official,27b,ternary,recommended,vision
+prism-ml/Ternary-Bonsai-2-27B-gguf|Ternary-Bonsai-2-27B-PTQ1_0.gguf|5.95|13|16|official,27b,ternary
+prism-ml/Ternary-Bonsai-2-27B-gguf|Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf|0.63|0|0|official,27b,vision-projector
+prism-ml/Ternary-Bonsai-2-27B-gguf|Ternary-Bonsai-2-27B-mmproj-BF16.gguf|0.93|0|0|official,27b,vision-projector
+
+# ---------------------------------------------------------------------------
+# Official prism-ml - Ternary-Bonsai (previous generation)
+# ---------------------------------------------------------------------------
+
+prism-ml/Ternary-Bonsai-27B-gguf|Ternary-Bonsai-27B-Q2_g64.gguf|7.59|15|19|official,27b,ternary,portable
+prism-ml/Ternary-Bonsai-27B-gguf|Ternary-Bonsai-27B-PQ2_0.gguf|7.17|15|19|official,27b,ternary
+prism-ml/Ternary-Bonsai-8B-gguf|Ternary-Bonsai-8B-PQ2_0.gguf|2.18|12|14|official,8b,ternary,recommended-small
+prism-ml/Ternary-Bonsai-8B-gguf|Ternary-Bonsai-8B-Q2_0_g64.gguf|2.31|12|14|official,8b,ternary,portable
+prism-ml/Ternary-Bonsai-4B-gguf|Ternary-Bonsai-4B-PQ2_0.gguf|1.08|9|12|official,4b,ternary
+prism-ml/Ternary-Bonsai-4B-gguf|Ternary-Bonsai-4B-Q2_0_g64.gguf|1.14|9|12|official,4b,ternary,portable
+prism-ml/Ternary-Bonsai-1.7B-gguf|Ternary-Bonsai-1.7B-PQ2_0.gguf|0.46|8|10|official,1.7b,ternary,smoke-test
+
+# ---------------------------------------------------------------------------
+# Official prism-ml - Bonsai (1-bit), previous generation
+# ---------------------------------------------------------------------------
+
+prism-ml/Bonsai-27B-gguf|Bonsai-27B-Q1_0.gguf|3.80|11|14|official,27b,1bit
+prism-ml/Bonsai-8B-gguf|Bonsai-8B-Q1_0.gguf|1.16|11|13|official,8b,1bit,recommended-cpu
+prism-ml/Bonsai-4B-gguf|Bonsai-4B-Q1_0.gguf|0.57|9|11|official,4b,1bit
+prism-ml/Bonsai-1.7B-gguf|Bonsai-1.7B-Q1_0.gguf|0.25|8|10|official,1.7b,1bit,smoke-test
+
+# ---------------------------------------------------------------------------
+# Community fine-tunes - Bonsai 2 27B
+# Popular variants. Not validated by this project or by upstream.
+# ---------------------------------------------------------------------------
+
+BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP-GGUF|Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0.gguf|7.21|14|17|community,27b,abliterated
+BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP-GGUF|Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP.gguf|7.66|14|17|community,27b,abliterated,mtp
+BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PTQ1_0-GGUF|Ternary-Bonsai-2-27B-Abliterated-PTQ1_0.gguf|5.95|12|15|community,27b,abliterated
+Hikari07jp/Ternary-Bonsai-2-27B-Abliterated-GGUF|Ternary-Bonsai-2-27B-Abliterated-PQ2_0.gguf|7.21|14|17|community,27b,abliterated
+Override-6/Ternary-Bonsai-2-27B-abliterated-gguf|Ternary-Bonsai-2-27B-PTQ1_0-abliterated.gguf|5.95|12|15|community,27b,abliterated
+
+OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF|Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf|7.21|14|17|community,27b,uncensored
+OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF|Ternary-Bonsai-2-27B-Uncensored-Heretic-PTQ1_0.gguf|5.95|12|15|community,27b,uncensored
+OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-v2-GGUF|Ternary-Bonsai-2-27B-Uncensored-Heretic-v2-PQ2_0.gguf|7.21|14|17|community,27b,uncensored
+OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-v2-GGUF|Ternary-Bonsai-2-27B-Uncensored-Heretic-v2-PTQ1_0.gguf|5.95|12|15|community,27b,uncensored
+dealignai/Bonsai-2-27B-1bit-CRACK-GGUF|Bonsai-2-27B-PTQ1_0-CRACK.gguf|5.95|12|15|community,27b,uncensored
+gaston-parravicini/Ternary-Bonsai-2-27B-Uncensored-Gaston-GGUF|Ternary-Bonsai-2-27B-Uncensored-Gaston-PTQ1_0.gguf|7.11|14|17|community,27b,uncensored
+gaston-parravicini/Ternary-Bonsai-2-27B-Uncensored-Gaston-GGUF|Ternary-Bonsai-2-27B-Uncensored-Gaston-PQ2_0.gguf|8.25|15|18|community,27b,uncensored
+
+sudopingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean.gguf|6.30|13|16|community,27b,mtp
+sudopingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp.gguf|7.01|14|17|community,27b,mtp
+CaryPalmer/Ternary-Bonsai-2-27B-262k-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp-procreations.gguf|6.40|13|16|community,27b,long-context,mtp
+
+ukisai/Swift-Bonsai-2-GGUF|Swift-Bonsai-2-PTQ1_0.gguf|5.95|12|15|community,27b
+ukisai/Swift-Bonsai-2-GGUF|Swift-Bonsai-2-PQ2_0.gguf|7.21|14|17|community,27b

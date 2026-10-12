@@ -1,0 +1,3 @@
+# Scripts source lib/common.sh through a runtime-resolved path, which shellcheck
+# cannot follow statically. The file is passed explicitly with -x in CI.
+disable=SC1091

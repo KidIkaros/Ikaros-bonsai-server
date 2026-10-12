@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# Shared helpers for the Ikaros Bonsai server scripts.
+# Source this file: . "$(dirname "$0")/lib/common.sh"
+
+# ---------------------------------------------------------------------------
+# Paths and constants
+# ---------------------------------------------------------------------------
+
+# Resolve the repository root from this file's location (scripts/lib/common.sh).
+_common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$_common_dir/../.." && pwd)"
+unset _common_dir
+
+STATE_DIR="${BONSAI_STATE_DIR:-$REPO_ROOT/.state}"
+BIN_DIR="$REPO_ROOT/bin"
+# Exported so the per-script globals stay visible to shellcheck and to any
+# child process that needs them.
+MODELS_DIR="${BONSAI_MODELS_DIR:-$REPO_ROOT/models}"
+export MODELS_DIR STATE_DIR BIN_DIR
+
+# Pinned upstream release. Bump PRISM_RELEASE and PRISM_COMMIT together.
+PRISM_RELEASE="${PRISM_RELEASE:-prism-b10772-e8fd209}"
+PRISM_COMMIT="${PRISM_COMMIT:-e8fd209}"
+# git cannot fetch an abbreviated sha, so the source build needs the full one
+PRISM_COMMIT_FULL="${PRISM_COMMIT_FULL:-e8fd209c975c80aa7fb36a8423571ff3b1b7e955}"
+PRISM_REPO="${PRISM_REPO:-PrismML-Eng/llama.cpp}"
+
+# Server defaults. Hermes requires a context window of at least 64000 tokens.
+BONSAI_PORT="${BONSAI_PORT:-8081}"
+BONSAI_CTX="${BONSAI_CTX:-65536}"
+BONSAI_NGL="${BONSAI_NGL:-99}"
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+if [ -t 1 ]; then
+    C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
+    C_CYAN='\033[36m'; C_DIM='\033[2m'; C_RESET='\033[0m'
+else
+    C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_DIM=''; C_RESET=''
+fi
+
+# All diagnostics go to stderr, so stdout stays clean for machine-readable
+# output such as detect.sh --json.
+info() { printf "${C_GREEN}[OK]${C_RESET}   %s\n" "$*" >&2; }
+warn() { printf "${C_YELLOW}[WARN]${C_RESET} %s\n" "$*" >&2; }
+err()  { printf "${C_RED}[ERR]${C_RESET}  %s\n" "$*" >&2; }
+step() { printf "\n${C_CYAN}==> %s${C_RESET}\n" "$*" >&2; }
+dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
+
+die() { err "$*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+# tty_available - succeed when /dev/tty can actually be opened.
+tty_available() { { : </dev/tty; } 2>/dev/null; }
+
+# ask PROMPT [DEFAULT] - read a line, print only the answer on stdout.
+# The prompt goes to stderr so callers can capture the value with $(...).
+# Falls back to DEFAULT when no terminal is attached.
+ask() {
+    _prompt="$1"; _default="${2:-}"
+    if [ -n "$_default" ]; then
+        printf "%s [%s]: " "$_prompt" "$_default" >&2
+    else
+        printf "%s: " "$_prompt" >&2
+    fi
+
+    REPLY=""
+    if tty_available; then
+        read -r REPLY </dev/tty || REPLY=""
+    elif [ -t 0 ]; then
+        read -r REPLY || REPLY=""
+    else
+        printf "\n" >&2
+    fi
+    [ -z "$REPLY" ] && REPLY="$_default"
+    printf '%s' "$REPLY"
+}
+
+# confirm PROMPT [y|n] - yes/no question. Defaults to no unless $2 is "y".
+confirm() {
+    _prompt="$1"; _default="${2:-n}"
+    if [ "$_default" = "y" ]; then _hint="Y/n"; else _hint="y/N"; fi
+    printf "%s [%s]: " "$_prompt" "$_hint" >&2
+
+    _reply=""
+    if tty_available; then
+        read -r _reply </dev/tty || _reply=""
+    elif [ -t 0 ]; then
+        read -r _reply || _reply=""
+    else
+        printf "\n" >&2
+    fi
+    [ -z "$_reply" ] && _reply="$_default"
+    case "$_reply" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+# have_downloader - succeed if curl or wget is available.
+have_downloader() {
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1
+}
+
+# download URL DEST - resumable download, prints a short progress line.
+download() {
+    _url="$1"; _dest="$2"
+    mkdir -p "$(dirname "$_dest")"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 --retry-delay 2 -C - -o "$_dest" "$_url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -c -O "$_dest" "$_url"
+    else
+        die "Neither curl nor wget found. Install one and re-run."
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Version comparison
+# ---------------------------------------------------------------------------
+
+# version_ge A B - succeed when A >= B, comparing dotted numeric components.
+version_ge() {
+    _a="$1" _b="$2"
+    while [ -n "$_a" ] || [ -n "$_b" ]; do
+        _ap="${_a%%.*}"; _bp="${_b%%.*}"
+        if [ "$_a" = "$_ap" ]; then _a=""; else _a="${_a#*.}"; fi
+        if [ "$_b" = "$_bp" ]; then _b=""; else _b="${_b#*.}"; fi
+        [ -z "$_ap" ] && _ap=0
+        [ -z "$_bp" ] && _bp=0
+        [ "$_ap" -gt "$_bp" ] 2>/dev/null && return 0
+        [ "$_ap" -lt "$_bp" ] 2>/dev/null && return 1
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Installed binary lookup
+# ---------------------------------------------------------------------------
+
+# llama_server_bin - print the path to the installed llama-server, or fail.
+# Handles both archive layouts upstream has shipped: bin/llama-server and a
+# flat llama-server next to its shared libraries.
+llama_server_bin() {
+    _backend="${BACKEND:-}"
+    [ -n "$_backend" ] || return 1
+
+    # A source build that carries the UI patch takes precedence over the
+    # prebuilt, so running build-from-source.sh actually changes what runs.
+    for _dir in "$BIN_DIR/$_backend-patched" "$BIN_DIR/$_backend"; do
+        for _c in "$_dir/bin/llama-server" "$_dir/llama-server"; do
+            if [ -x "$_c" ]; then printf '%s' "$_c"; return 0; fi
+        done
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Detection cache
+# ---------------------------------------------------------------------------
+
+DETECT_ENV="$STATE_DIR/detect.env"
+
+# load_detect - source the cached detection result, or fail with a clear hint.
+load_detect() {
+    [ -f "$DETECT_ENV" ] || die "No hardware detection found. Run: ./scripts/detect.sh"
+    # shellcheck source=/dev/null
+    . "$DETECT_ENV"
+}
+
+# detect_is_stale - succeed when the cache is missing or older than 24 hours.
+detect_is_stale() {
+    [ -f "$DETECT_ENV" ] || return 0
+    _now="$(date +%s)"
+    _mtime="$(stat -c '%Y' "$DETECT_ENV" 2>/dev/null || stat -f '%m' "$DETECT_ENV" 2>/dev/null || echo 0)"
+    [ "$((_now - _mtime))" -gt 86400 ]
+}
+
+# ---------------------------------------------------------------------------
+# HF helpers
+# ---------------------------------------------------------------------------
+
+# hf_tree_raw REPO [REVISION] - print the raw HF tree JSON, or fail.
+hf_tree_raw() {
+    _repo="$1"; _rev="${2:-main}"
+    _auth=()
+    [ -n "${HF_TOKEN:-}" ] && _auth=(-H "Authorization: Bearer $HF_TOKEN")
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -sf "${_auth[@]}" "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
+    else
+        wget -qO- --header="Authorization: Bearer ${HF_TOKEN:-}" \
+             "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
+    fi
+}
+
+# hf_tree REPO [REVISION] - print "SIZE PATH" per GGUF file. Succeeds with no
+# output when the repo exists but holds no GGUF files; fails when unreadable.
+hf_tree() {
+    _json="$(hf_tree_raw "$1" "${2:-main}")" || return 1
+    [ -n "$_json" ] || return 1
+
+    printf '%s' "$_json" | tr -d '\n' | sed 's/},{/}\n{/g' | while IFS= read -r _obj; do
+        _path="$(printf '%s' "$_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+        _size="$(printf '%s' "$_obj" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')"
+        case "$_path" in
+            *.gguf) [ -n "$_path" ] && printf '%s %s\n' "${_size:-0}" "$_path" ;;
+        esac
+    done
+}
+
+# human_size BYTES - format a byte count for display.
+human_size() {
+    _b="${1:-0}"
+    if [ "$_b" -ge 1073741824 ] 2>/dev/null; then
+        awk -v b="$_b" 'BEGIN { printf "%.1f GB", b/1073741824 }'
+    elif [ "$_b" -ge 1048576 ] 2>/dev/null; then
+        awk -v b="$_b" 'BEGIN { printf "%.0f MB", b/1048576 }'
+    else
+        printf '%s B' "$_b"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Quant format support
+# ---------------------------------------------------------------------------
+
+# The PrismML fork supports these formats. Anything else must be refused or
+# flagged, otherwise llama-server fails at load time with an opaque error.
+# See docs/MODELS.md for the full matrix.
+
+# quant_supported FILE - succeed when the filename names a supported format.
+quant_supported() {
+    _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$_f" in
+        *mlx*)      return 1 ;;   # Apple MLX, not a GGUF llama.cpp can load
+        *gsq*)      return 1 ;;   # GSQ-RCO, no kernels in this fork
+        *ninfer*)   return 1 ;;   # NInfer, separate runtime
+        *awq*)      return 1 ;;
+    esac
+    return 0
+}
+
+# quant_label FILE - short human label for a GGUF filename.
+quant_label() {
+    _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$_f" in
+        *pq2_0*)  printf 'PQ2_0 (2.1 bpw)' ;;
+        *ptq1_0*) printf 'PTQ1_0 (1.75 bpw)' ;;
+        *q2_0*)   printf 'Q2_0' ;;
+        *q1_0*)   printf 'Q1_0 (1-bit)' ;;
+        *q4_k*)   printf 'Q4_K' ;;
+        *q4_0*)   printf 'Q4_0' ;;
+        *q5_k*)   printf 'Q5_K' ;;
+        *q6_k*)   printf 'Q6_K' ;;
+        *q8_0*)   printf 'Q8_0' ;;
+        *mmproj*) printf 'vision projector' ;;
+        *)        printf 'unknown' ;;
+    esac
+}
+
+# quant_needs_vulkan_warning FILE - Vulkan has only partial PQ2_0/PTQ1_0 support.
+quant_needs_vulkan_warning() {
+    _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$_f" in *pq2_0*|*ptq1_0*) return 0 ;; *) return 1 ;; esac
+}
