@@ -18,7 +18,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run shellcheck
         run: shellcheck --version && shellcheck -x scripts/*.sh scripts/lib/*.sh tests/run.sh setup.sh
@@ -27,7 +27,7 @@ jobs:
     name: tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run the test suite
         run: ./tests/run.sh
@@ -43,19 +43,24 @@ jobs:
     runs-on: ubuntu-24.04
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
       - name: Fetch the pinned source and apply the patch
         run: |
+          # Read the pinned commit straight out of common.sh so the workflow and
+          # the scripts can never disagree about which revision is being built.
+          COMMIT="$(grep -oP 'PRISM_COMMIT_FULL="\$\{PRISM_COMMIT_FULL:-\K[0-9a-f]+' scripts/lib/common.sh)"
+          echo "pinned commit: $COMMIT"
           git init -q src
           git -C src remote add origin "https://github.com/PrismML-Eng/llama.cpp.git"
-          git -C src fetch --depth 1 origin "$(grep -oP 'PRISM_COMMIT_FULL="\$\{PRISM_COMMIT_FULL:-\K[0-9a-f]+' scripts/lib/common.sh)"
+          git -C src fetch --depth 1 origin "$COMMIT"
           git -C src checkout -q --detach FETCH_HEAD
-          git -C src apply patches/0001-speedlog-ema-tps.patch
+          # git -C resolves the patch path relative to src/, so pass it absolute.
+          git -C src apply "$GITHUB_WORKSPACE/patches/0001-speedlog-ema-tps.patch"
 
       - name: Build the patched UI
         working-directory: src/tools/ui
