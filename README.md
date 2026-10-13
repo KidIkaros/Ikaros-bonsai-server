@@ -1,4 +1,4 @@
-# Ikaros Bonsai server
+# Ikaros — a local model server for Hermes and any OpenAI-compatible client.
 
 A local model server for [Hermes](https://hermes.ai) and any other OpenAI-compatible
 client, running PrismML's [Bonsai](https://huggingface.co/collections/prism-ml) models

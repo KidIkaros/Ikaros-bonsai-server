@@ -38,8 +38,8 @@ for arg in "$@"; do
 done
 
 printf '\n'
-printf '  %s\n' "Ikaros Bonsai server setup"
-printf '  %s\n' "--------------------------"
+printf '  %s\n' "Ikaros setup"
+printf '  %s\n' "------------"
 
 # ---------------------------------------------------------------------------
 # 1. Hardware
