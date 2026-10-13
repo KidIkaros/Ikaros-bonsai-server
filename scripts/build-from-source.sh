@@ -122,8 +122,12 @@ case "$BACKEND" in
     cuda)   BACKEND_FLAGS=(-DGGML_CUDA=ON) ;;
     rocm)
         [ -n "$ROCM_PREFIX" ] || die "No ROCm installation found; cannot build the HIP backend."
+        # CMAKE_PREFIX_PATH is required: without it find_package(hip) fails and
+        # the configure step dies with "Could not find a package configuration
+        # file provided by hip", which does not point at the real cause.
         BACKEND_FLAGS=(
             -DGGML_HIP=ON
+            -DCMAKE_PREFIX_PATH="$ROCM_PREFIX"
             -DCMAKE_HIP_COMPILER="$ROCM_PREFIX/lib/llvm/bin/clang++"
         )
         if [ -n "$ROCM_GFX" ]; then

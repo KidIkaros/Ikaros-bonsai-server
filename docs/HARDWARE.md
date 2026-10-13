@@ -336,6 +336,36 @@ it was measured on**, which carries a custom mat-vec kernel that cuts a 3-token 
 2.28x to 1.55x a single-token pass. Without that kernel the wider window does not pay.
 On a stock build, use `n-max 1`.
 
+#### A HIP port of the NVIDIA mat-vec kernel was tried, and is slower
+
+The CUDA PTQ1_0 mat-vec kernel described above is already in this tree, disabled for HIP
+by a single gate (`ggml_cuda_q8_1_layout_for` in `common.cuh` and
+`ptq1_0_pt_enabled()` in `mmvq-ptq1_0.cuh`). Enabling it for HIP is a three-file change,
+and it was done and measured here rather than assumed.
+
+**It is correct.** Batch-invariance, which is the kernel's whole point, holds: greedy
+output with and without MTP was byte-identical on the ported build.
+
+**It is much slower on this hardware.** 27B lean MTP file, 65536 context, `q8_0` cache,
+RX 9060 XT:
+
+| Build | no speculative decoding | `draft-mtp`, `n-max 1` |
+|---|---|---|
+| stock HIP | 36.4 tok/s | **41.3 tok/s** |
+| the same build with the port | 24.8 tok/s | **7.3 tok/s** |
+
+The control matters here: rebuilding the same tree with the change reverted returns 36.3
+and 41.4, so the regression is the change and not the build configuration.
+
+The likely reason is that the kernel's geometry is tuned for NVIDIA's 32-lane warps and its
+planar activation layout suits NVIDIA's memory system. On AMD's 64-lane wavefronts it is a
+32% loss at one column and a 5.6x loss at the two-column batches MTP needs. That is also
+why the published +24% for MTP is NVIDIA-specific: their kernel helps there, while the same
+path hurts on AMD.
+
+So the port is not shipped. On AMD, MTP with the stock path is the win, and it is the +6 to
++13% measured above.
+
 #### A smaller model from the same family does not work
 
 Tested rather than assumed, because it looked promising: Bonsai 1.7B and Bonsai 8B are
