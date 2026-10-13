@@ -270,6 +270,7 @@ kv_bits_per_element() {
 KV_COST_CACHE="$STATE_DIR/kv-costs.tsv"
 # SPEED_CACHE - measured tokens per second per model, context and KV type.
 SPEED_CACHE="$STATE_DIR/speeds.tsv"
+COVERAGE_CACHE="$STATE_DIR/coverage.tsv"
 
 # kv_cost_get MODEL - print the measured f16 bytes per cell, or nothing.
 kv_cost_get() {
@@ -318,6 +319,36 @@ kv_mib() {
     _bits="$(kv_bits_per_element "$3")" || return 1
     awk -v bpc="$_bpc" -v cells="$2" -v bits="$_bits" \
         'BEGIN { printf "%.0f", bpc * (bits / 16) * cells / 1048576 }'
+}
+
+# coverage_set DIMENSION VALUE - record that a configuration dimension was explored.
+#
+# What improves a recommendation is not how many measurements were run but how
+# many distinct dimensions were opened. Re-measuring inside one dimension
+# (another ubatch, another cache type) buys a few percent at best, while a new
+# dimension is where the step changes came from: the Vulkan backend was worth
+# 15% and the MTP spec type 13%, against 3% for anything inside a dimension.
+coverage_set() {
+    mkdir -p "$STATE_DIR"
+    local _tmp="$COVERAGE_CACHE.tmp"
+    if [ -f "$COVERAGE_CACHE" ]; then
+        # Already recorded: leave it in place so the report keeps a fixed order.
+        if awk -F'\t' -v d="$1" -v v="$2" '$1 == d && $2 == v { f = 1 } END { exit !f }' \
+                "$COVERAGE_CACHE"; then
+            return 0
+        fi
+        cp "$COVERAGE_CACHE" "$_tmp"
+    else
+        : > "$_tmp"
+    fi
+    printf '%s\t%s\n' "$1" "$2" >> "$_tmp"
+    mv "$_tmp" "$COVERAGE_CACHE"
+}
+
+# coverage_values DIMENSION - the values explored so far, one per line.
+coverage_values() {
+    [ -f "$COVERAGE_CACHE" ] || return 0
+    awk -F'\t' -v d="$1" '$1 == d { print $2 }' "$COVERAGE_CACHE"
 }
 
 # speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] - measured tokens per second.

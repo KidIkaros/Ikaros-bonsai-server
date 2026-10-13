@@ -442,6 +442,26 @@ assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
 
 rm -rf "$_tmpdir"
 
+group "configuration coverage"
+
+# Coverage records which dimensions were explored, not how many runs happened.
+_cov="$(mktemp -d)"
+_cov_run() {
+    BONSAI_STATE_DIR="$_cov" bash -c ". scripts/lib/common.sh; $1" 2>/dev/null
+}
+_cov_run 'coverage_set backend rocm'
+_cov_run 'coverage_set backend vulkan'
+_cov_run 'coverage_set backend rocm'
+assert_eq "a repeated value is stored once" "rocm
+vulkan" "$(_cov_run 'coverage_values backend')"
+assert_eq "a dimension never explored reports nothing" "" "$(_cov_run 'coverage_values ngl')"
+if [ -f "$_cov/coverage.tsv" ]; then
+    pass "recording creates the cache"
+else
+    fail "recording should create the cache"
+fi
+rm -rf "$_cov"
+
 group "auto KV reports whether it actually decided"
 
 # q8_0 comes out of four situations and only one is a decision. An unmeasured
@@ -470,12 +490,12 @@ group "speed cache keying"
 # older build must not survive a release bump.
 _spd="$(mktemp -d)"
 _speed_probe() {
-    STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+    BONSAI_STATE_DIR="$_spd" PRISM_RELEASE="prism-b10772-e8fd209" \
         BACKEND="$1" bash -c ". scripts/lib/common.sh; speed_get m.gguf 65536 q8_0" 2>/dev/null
 }
-STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+BONSAI_STATE_DIR="$_spd" PRISM_RELEASE="prism-b10772-e8fd209" \
     BACKEND=rocm bash -c ". scripts/lib/common.sh; speed_set m.gguf 65536 q8_0 36.1" 2>/dev/null
-STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+BONSAI_STATE_DIR="$_spd" PRISM_RELEASE="prism-b10772-e8fd209" \
     BACKEND=vulkan bash -c ". scripts/lib/common.sh; speed_set m.gguf 65536 q8_0 30.4" 2>/dev/null
 
 assert_eq "rocm reads back its own speed" "36.1" "$(_speed_probe rocm)"
@@ -485,7 +505,7 @@ if [ -n "$(_speed_probe cuda)" ]; then
 else
     pass "an unmeasured backend reports nothing"
 fi
-if [ -n "$(STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10999-deadbee" BACKEND=rocm bash -c ". scripts/lib/common.sh; speed_get m.gguf 65536 q8_0" 2>/dev/null)" ]; then
+if [ -n "$(BONSAI_STATE_DIR="$_spd" PRISM_RELEASE="prism-b10999-deadbee" BACKEND=rocm bash -c ". scripts/lib/common.sh; speed_get m.gguf 65536 q8_0" 2>/dev/null)" ]; then
     fail "a measurement from another release must not be served"
 else
     pass "a measurement from another release is treated as stale"

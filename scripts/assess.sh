@@ -45,6 +45,7 @@ SWEEP_MODEL=""
 TUNE=0
 TUNE_TOKENS=64
 TUNE_MODEL=""
+COVERAGE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,8 +59,9 @@ while [ $# -gt 0 ]; do
         --sweep-levels) SWEEP_LEVELS="${2:-}"; shift ;;
         --model)    SWEEP_MODEL="${2:-}"; TUNE_MODEL="${2:-}"; shift ;;
         --tune)     TUNE=1 ;;
+        --coverage) COVERAGE=1 ;;
         --tune-tokens) TUNE_TOKENS="${2:-64}"; shift ;;
-        -h|--help)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
     shift
@@ -150,6 +152,7 @@ measure_kv() {
 
     _bpc="$(awk -v mib="$_mib" 'BEGIN { printf "%.4f", mib * 1048576 / 512 }')"
     kv_cost_set "$_model" "$_bpc" "${_layers:-}"
+    coverage_set model "$(basename "$_model")"
     info "measured $(basename "$_model"): ${_mib} MiB at 512 cells, ${_layers:-?} layers (${_bpc} bytes/cell)"
 }
 
@@ -235,8 +238,86 @@ measure_speed() {
         return 1
     fi
     speed_set "$_model" "$_ctx" "$_kv" "$_tps"
+    coverage_set backend "${BACKEND:-unknown}"
+    coverage_set kv "$_kv"
     info "measured $(basename "$_model") at $_ctx/$_kv: ${_tps} tok/s"
 }
+
+# show_coverage - which configuration dimensions have been explored.
+#
+# What improves a recommendation is not how many measurements were run but how
+# many distinct dimensions were opened. Re-measuring inside one dimension buys
+# a few percent; a new dimension is where the step changes came from. This
+# prints the map so the unexplored ones are visible rather than implied.
+show_coverage() {
+    step "Configuration coverage"
+
+    local _rows="" _n
+    _add() {
+        local _d="$1" _y="$2" _vals
+        # paste -sd', ' treats the two characters as alternating delimiters.
+        _vals="$(coverage_values "$_d" | paste -sd',' - 2>/dev/null | sed 's/,/, /g')"
+        if [ -z "$_vals" ]; then
+            _vals="not explored"
+            _rows="${_rows}${_d}\t${_vals}\t${_y}\tUNEXPLORED\n"
+        else
+            _rows="${_rows}${_d}\t${_vals}\t${_y}\tcovered\n"
+        fi
+    }
+
+    # Ordered by measured yield, which is the point: the top of this list is
+    # where a run is worth spending.
+    _add ngl      "up to 4.2x"
+    _add backend  "up to 15%"
+    _add spec     "up to 13%"
+    _add kv       "3 to 5%"
+    _add context  "unknown"
+    _add ubatch   "about 3%"
+    _add model    "-"
+
+    printf '  %-10s %-34s %-10s %s\n' "dimension" "explored" "yield" "status"
+    printf '  %s\n' "-------------------------------------------------------------------------"
+    printf '%b' "$_rows" | while IFS="$(printf '\t')" read -r _d _v _y _st; do
+        printf '  %-10s %-34s %-10s %s\n' "$_d" "$_v" "$_y" "$_st"
+    done
+
+    echo ""
+    printf '  %s\n' "Thread count was measured as noise on this hardware (86.9 against 87.1 tok/s),"
+    printf '  %s\n' "so it is deliberately not tracked."
+
+    local _missing=""
+    for _d in ngl backend spec kv context; do
+        [ -n "$(coverage_values "$_d")" ] || _missing="$_missing $_d"
+    done
+
+    echo ""
+    if [ -n "$_missing" ]; then
+        info "Unexplored with real potential:$_missing"
+        case "$_missing" in
+            *ngl*)     dim "  ./scripts/assess.sh --sweep            # find the offload split" ;;
+        esac
+        case "$_missing" in
+            *context*) dim "  ./scripts/assess.sh --sweep --context 131072   # long context" ;;
+        esac
+        case "$_missing" in
+            *backend*) dim "  BACKEND=vulkan ./scripts/setup.sh     # the other backend" ;;
+        esac
+        case "$_missing" in
+            *spec*)    dim "  ./scripts/assess.sh --tune            # tests MTP when the model has it" ;;
+        esac
+        case "$_missing" in
+            *kv*)      dim "  ./scripts/assess.sh --measure --speed # prices the cache types" ;;
+        esac
+    else
+        info "Every tracked dimension has been explored."
+    fi
+    echo ""
+}
+
+if [ "$COVERAGE" = 1 ]; then
+    show_coverage
+    exit 0
+fi
 
 if [ "$DO_MEASURE" = 1 ]; then
     step "Measuring KV cache cost"
@@ -337,6 +418,13 @@ if [ "$TUNE" = 1 ]; then
         fi
         printf '  %-34s %6s tok/s\n' "$_label" "$_tps"
         printf '%s\t%s\t%s\t%s\n' "$_tps" "$_label" "$_kv" "$_env" >> "$_results"
+        coverage_set kv "$_kv"
+        coverage_set backend "${BACKEND:-unknown}"
+        coverage_set context "$CONTEXT"
+        case "$_label" in
+            *"n-max 1"|*"n-max 2") coverage_set spec "draft-mtp" ;;
+            *ubatch*)              coverage_set ubatch "$(printf '%s' "$_label" | grep -oE '[0-9]+$' || echo 512)" ;;
+        esac
     }
 
     printf '  %-34s %12s\n' "configuration" "result"
@@ -535,7 +623,9 @@ if [ "$SWEEP" = 1 ]; then
             BEST_TPS="$_tps"; BEST_NGL="$_ngl"
         fi
         speed_set "$SWEEP_PATH" "$CONTEXT" "$KV_TYPE" "$_tps"
+        coverage_set ngl "$_ngl"
     done
+    coverage_set context "$CONTEXT"
 
     echo ""
     if [ -n "$BEST_NGL" ]; then

@@ -11,6 +11,7 @@
 #   ./scripts/bonsai speed          quick tokens/sec check against the running server
 #   ./scripts/bonsai tune           find the fastest settings on this machine
 #   ./scripts/bonsai assess         what fits, and how the KV type changes it
+#   ./scripts/bonsai coverage       which settings have been tried, and which have not
 #   ./scripts/bonsai models         list installed models
 #
 # Settings live in .state/service.env. Editing it, or using `set`, is enough:
@@ -288,6 +289,7 @@ except Exception:
 
     tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;
     assess) load_settings; exec "$SCRIPT_DIR/assess.sh" "$@" ;;
+    coverage) load_settings; exec "$SCRIPT_DIR/assess.sh" --coverage ;;
 
     models)
         load_settings
