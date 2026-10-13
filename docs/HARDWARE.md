@@ -90,49 +90,98 @@ and `install-service.sh` only pass it through when you have set it yourself.
 The intuitive model - "a 1.7B is tiny, so it fits anywhere" - is wrong here, and it is
 the single most common surprise.
 
-The KV cache scales with **context length**, not model size. At the 65536 tokens Hermes
-requires, the cache measured:
+The KV cache scales with **context length**, not model size. On the 8B at the 65536
+tokens Hermes requires, measured with `llama_kv_cache: size = ...`:
 
-| Model | Weights | KV cache at 65536 | Total |
+| Cache type | KV cache at 65536 | vs f16 | 8B total |
 |---|---|---|---|
-| 27B `PQ2_0` | 6.7 GB | ~7.1 GB | ~13.8 GB (measured end to end) |
-| 8B `PQ2_0` | 2.0 GB | 9.7 GB | ~11.7 GB |
-| 1.7B `Q1_0` | 0.24 GB | 7.5 GB | ~7.7 GB |
+| `f16` | 9216 MiB (9.0 GB) | 1.00x | ~11.0 GB |
+| **`q8_0` (default)** | **4896 MiB (4.8 GB)** | **1.88x smaller** | **~6.8 GB** |
+| `q4_0` / `iq4_nl` | 2592 MiB (2.5 GB) | 3.56x smaller | ~4.5 GB |
 
-The 8B needs *more* cache than the 27B. The 27B is a hybrid-attention model that keeps
-part of its state in a fixed-size recurrent form, so its cache grows more slowly.
+Those ratios come from the formats, not the model: `q8_0` stores 8 bits plus a 16-bit
+scale per 32 elements, which is 8.5 effective bits against f16's 16, so 16 / 8.5 = 1.88.
+The same ratios apply to any model, which is why the per-model table below scales the
+known f16 cache.
 
-Practical consequence: **budget 8-10 GB of VRAM for the cache at 64K context before you
-count the weights at all.** Even the 1.7B needs about 8 GB to satisfy Hermes.
+### KV cache quantization is on by default
+
+`BONSAI_KV_TYPE` defaults to `q8_0`. It costs a small amount of precision for a large
+amount of memory, and at 64K context that trade is clearly worth taking.
+
+| Value | Effect |
+|---|---|
+| `q8_0` | default. 1.88x smaller, near-lossless |
+| `q5_0`, `q5_1` | ~2.9x smaller, small quality cost |
+| `q4_0`, `q4_1` | 3.56x smaller, noticeable quality cost |
+| `iq4_nl` | 3.56x smaller, usually better quality than `q4_0` |
+| `f16`, `bf16` | no quantization; what upstream defaults to |
+| `f32` | largest, highest precision |
+
+```bash
+./scripts/start-server.sh                              # q8_0, the default
+BONSAI_KV_TYPE=f16 ./scripts/start-server.sh           # turn it off
+BONSAI_KV_TYPE=iq4_nl ./scripts/start-server.sh        # push for memory
+BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 ./scripts/start-server.sh
+./scripts/start-server.sh --kv-type q4_0               # same thing as the env var
+```
+
+The script validates the value against what the build actually accepts and fails with
+the allowed list rather than letting llama-server reject it later.
+
+> **On quality.** `q8_0` is widely treated as near-lossless for KV caches. `q4_0` is not:
+> expect visible degradation on long contexts and reasoning-heavy prompts. Test before
+> rolling it out to anyone else. This project has measured memory only, not quality.
+
+### A quality lever for q4_0 K
+
+The PrismML fork adds `--kv-mean-center`, which subtracts a precomputed per-(head,
+channel) bias from K before it is quantized. Symmetric `q4_0` has no zero point, so a
+channel with a non-zero mean wastes dynamic range encoding that constant offset; removing
+it first reduces quantization error. The fork ships a softmax-invariance argument for why
+this is exactly correct in infinite precision.
+
+It is scoped to `q4_0` K and needs a calibration file from `tools/kv-mean-center`:
+
+```bash
+BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
+BONSAI_EXTRA_ARGS="--kv-mean-center /path/to/bias.gguf" ./scripts/start-server.sh
+```
+
+See [MODELS.md](MODELS.md) for whether a bias file exists for your model.
 
 ### Per model
 
-| Model | Min VRAM | Min RAM | Notes |
-|---|---|---|---|
-| 27B `PQ2_0` | 14 GB | 18 GB | verified on a 16 GB card |
-| 27B `PTQ1_0` | 13 GB | 16 GB | smaller weights, same cache |
-| 27B `Q1_0` | 11 GB | 14 GB | |
-| 8B `PQ2_0` | 12 GB | 14 GB | |
-| 8B `Q1_0` | 11 GB | 13 GB | |
-| 4B `PQ2_0` | 9 GB | 12 GB | cache estimated |
-| 4B `Q1_0` | 9 GB | 11 GB | cache estimated |
-| 1.7B `PQ2_0` | 8 GB | 10 GB | cache estimated |
-| 1.7B `Q1_0` | 8 GB | 10 GB | |
+Assuming the defaults: **65536 context and `q8_0` KV**.
 
-The 27B row is anchored on a measured end-to-end total. The rest are the measured cache
-plus the known weight size, so treat them as close estimates rather than exact figures.
+| Model | Weights | KV (q8_0) | Min VRAM | Min RAM |
+|---|---|---|---|---|
+| 27B `PQ2_0` | 6.7 GB | ~3.8 GB | 11 GB | 15 GB |
+| 27B `PTQ1_0` | 5.6 GB | ~3.8 GB | 10 GB | 14 GB |
+| 27B `Q1_0` | 3.5 GB | ~3.8 GB | 8 GB | 12 GB |
+| 8B `PQ2_0` | 2.0 GB | 4.8 GB | 7 GB | 11 GB |
+| 8B `Q1_0` | 1.1 GB | 4.8 GB | 6 GB | 10 GB |
+| 4B `PQ2_0` | 1.0 GB | ~4.2 GB | 6 GB | 9 GB |
+| 4B `Q1_0` | 0.5 GB | ~4.2 GB | 5 GB | 8 GB |
+| 1.7B `PQ2_0` | 0.4 GB | ~4.0 GB | 5 GB | 8 GB |
+| 1.7B `Q1_0` | 0.2 GB | ~4.0 GB | 5 GB | 8 GB |
+
+The 8B cache is measured exactly. The 27B cache is scaled from a measured end-to-end
+total of 13.8 GB at `f16`, which implies ~7.1 GB of cache. The smaller models are scaled
+estimates. Treat the last two columns as close guidance, not exact figures.
+
+The headline consequence: **with `q8_0` the 27B fits in about 11 GB, so a 12 GB card can
+run it at the full 64K context Hermes needs.** On `f16` it needs ~14 GB and does not.
 
 ### Trading context for memory
 
-Lowering the context shrinks the cache roughly linearly, which is the only lever that
-matters much:
+Lowering the context shrinks the cache linearly, and stacks with the type:
 
 ```bash
 BONSAI_CTX=16384 ./scripts/start-server.sh
 ```
 
-At 16384 the cache drops to roughly a quarter of the 64K figure, so the 1.7B fits in
-about 2.5 GB and the 27B in about 8.5 GB.
+At 16384 with `q8_0`, the 8B cache drops to about 1.2 GB and the 27B to about 0.95 GB.
 
 Hermes needs at least 64000 tokens, so only lower this if you are calling the API
 directly. `start-server.sh` warns when the value drops below that.
@@ -140,9 +189,9 @@ directly. `start-server.sh` warns when the value drops below that.
 ### CPU
 
 Everything above applies to system RAM too, since the cache lives in memory either way,
-plus a couple of GB of headroom for the process. CPU inference works but is slow, and
-speed tracks memory bandwidth more than core count. It is fine for testing and for the
-small models.
+plus a couple of GB of headroom for the process. KV quantization matters even more on
+CPU, where memory bandwidth is usually the limit. CPU inference works but is slow, and
+speed tracks bandwidth more than core count.
 
 ## Router mode and memory
 

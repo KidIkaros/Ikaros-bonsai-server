@@ -30,6 +30,50 @@ BONSAI_PORT="${BONSAI_PORT:-8081}"
 BONSAI_CTX="${BONSAI_CTX:-65536}"
 BONSAI_NGL="${BONSAI_NGL:-99}"
 
+# KV cache quantization. At the 65536 context Hermes requires, the cache is the
+# single biggest consumer of VRAM and q8_0 halves it at negligible quality cost,
+# so it is the default. Set BONSAI_KV_TYPE=f16 to turn it off, or q4_0/iq4_nl
+# for roughly a quarter of the f16 size.
+#
+# BONSAI_KV_TYPE sets both halves; BONSAI_KV_TYPE_K / _V override one half.
+# They stay empty here so that --kv-type on the command line still composes.
+# Always resolve through kv_type_k / kv_type_v, never the raw variables.
+BONSAI_KV_TYPE="${BONSAI_KV_TYPE:-q8_0}"
+BONSAI_KV_TYPE_K="${BONSAI_KV_TYPE_K:-}"
+BONSAI_KV_TYPE_V="${BONSAI_KV_TYPE_V:-}"
+
+# Types the pinned build accepts for --cache-type-k and --cache-type-v.
+# tests/run.sh asserts this matches what the installed binary reports, so it
+# cannot silently drift from the build.
+KV_CACHE_TYPES="f32 f16 bf16 q8_0 q4_0 q4_1 iq4_nl q5_0 q5_1"
+
+# kv_type_valid TYPE - succeed when TYPE is a KV cache type this build accepts.
+kv_type_valid() {
+    local _t
+    for _t in $KV_CACHE_TYPES; do
+        [ "$1" = "$_t" ] && return 0
+    done
+    return 1
+}
+
+# kv_type_k / kv_type_v - the resolved type for each half of the cache.
+kv_type_k() { printf '%s' "${BONSAI_KV_TYPE_K:-$BONSAI_KV_TYPE}"; }
+kv_type_v() { printf '%s' "${BONSAI_KV_TYPE_V:-$BONSAI_KV_TYPE}"; }
+
+# kv_type_effective - print the KV type that will actually be applied, or "f16"
+# when quantization is disabled on both halves.
+kv_type_effective() {
+    local _k _v
+    _k="$(kv_type_k)"; _v="$(kv_type_v)"
+    if [ "$_k" = "f16" ] && [ "$_v" = "f16" ]; then
+        printf 'f16'
+    elif [ "$_k" = "$_v" ]; then
+        printf '%s' "$_k"
+    else
+        printf 'K=%s V=%s' "$_k" "$_v"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -62,7 +106,8 @@ tty_available() { { : </dev/tty; } 2>/dev/null; }
 # The prompt goes to stderr so callers can capture the value with $(...).
 # Falls back to DEFAULT when no terminal is attached.
 ask() {
-    _prompt="$1"; _default="${2:-}"
+    local _prompt="$1" _default="${2:-}"
+    # REPLY is deliberately global: it is the documented output of this function.
     if [ -n "$_default" ]; then
         printf "%s [%s]: " "$_prompt" "$_default" >&2
     else
@@ -83,7 +128,8 @@ ask() {
 
 # confirm PROMPT [y|n] - yes/no question. Defaults to no unless $2 is "y".
 confirm() {
-    _prompt="$1"; _default="${2:-n}"
+    local _prompt="$1" _default="${2:-n}"
+    local _hint _reply
     if [ "$_default" = "y" ]; then _hint="Y/n"; else _hint="y/N"; fi
     printf "%s [%s]: " "$_prompt" "$_hint" >&2
 
@@ -110,7 +156,7 @@ have_downloader() {
 
 # download URL DEST - resumable download, prints a short progress line.
 download() {
-    _url="$1"; _dest="$2"
+    local _url="$1" _dest="$2"
     mkdir -p "$(dirname "$_dest")"
     if command -v curl >/dev/null 2>&1; then
         curl -fL --retry 3 --retry-delay 2 -C - -o "$_dest" "$_url"
@@ -127,7 +173,7 @@ download() {
 
 # version_ge A B - succeed when A >= B, comparing dotted numeric components.
 version_ge() {
-    _a="$1" _b="$2"
+    local _a="$1" _b="$2" _ap _bp
     while [ -n "$_a" ] || [ -n "$_b" ]; do
         _ap="${_a%%.*}"; _bp="${_b%%.*}"
         if [ "$_a" = "$_ap" ]; then _a=""; else _a="${_a#*.}"; fi
@@ -148,7 +194,7 @@ version_ge() {
 # Handles both archive layouts upstream has shipped: bin/llama-server and a
 # flat llama-server next to its shared libraries.
 llama_server_bin() {
-    _backend="${BACKEND:-}"
+    local _backend="${BACKEND:-}" _dir _c
     [ -n "$_backend" ] || return 1
 
     # A source build that carries the UI patch takes precedence over the
@@ -177,6 +223,7 @@ load_detect() {
 # detect_is_stale - succeed when the cache is missing or older than 24 hours.
 detect_is_stale() {
     [ -f "$DETECT_ENV" ] || return 0
+    local _now _mtime
     _now="$(date +%s)"
     _mtime="$(stat -c '%Y' "$DETECT_ENV" 2>/dev/null || stat -f '%m' "$DETECT_ENV" 2>/dev/null || echo 0)"
     [ "$((_now - _mtime))" -gt 86400 ]
@@ -188,7 +235,8 @@ detect_is_stale() {
 
 # hf_tree_raw REPO [REVISION] - print the raw HF tree JSON, or fail.
 hf_tree_raw() {
-    _repo="$1"; _rev="${2:-main}"
+    local _repo="$1" _rev="${2:-main}"
+    local -a _auth=()
     _auth=()
     [ -n "${HF_TOKEN:-}" ] && _auth=(-H "Authorization: Bearer $HF_TOKEN")
 
@@ -203,6 +251,7 @@ hf_tree_raw() {
 # hf_tree REPO [REVISION] - print "SIZE PATH" per GGUF file. Succeeds with no
 # output when the repo exists but holds no GGUF files; fails when unreadable.
 hf_tree() {
+    local _json _obj _path _size
     _json="$(hf_tree_raw "$1" "${2:-main}")" || return 1
     [ -n "$_json" ] || return 1
 
@@ -217,7 +266,7 @@ hf_tree() {
 
 # human_size BYTES - format a byte count for display.
 human_size() {
-    _b="${1:-0}"
+    local _b="${1:-0}"
     if [ "$_b" -ge 1073741824 ] 2>/dev/null; then
         awk -v b="$_b" 'BEGIN { printf "%.1f GB", b/1073741824 }'
     elif [ "$_b" -ge 1048576 ] 2>/dev/null; then
@@ -237,6 +286,7 @@ human_size() {
 
 # quant_supported FILE - succeed when the filename names a supported format.
 quant_supported() {
+    local _f
     _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$_f" in
         *mlx*)      return 1 ;;   # Apple MLX, not a GGUF llama.cpp can load
@@ -249,6 +299,7 @@ quant_supported() {
 
 # quant_label FILE - short human label for a GGUF filename.
 quant_label() {
+    local _f
     _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$_f" in
         *pq2_0*)  printf 'PQ2_0 (2.1 bpw)' ;;
@@ -267,6 +318,7 @@ quant_label() {
 
 # quant_needs_vulkan_warning FILE - Vulkan has only partial PQ2_0/PTQ1_0 support.
 quant_needs_vulkan_warning() {
+    local _f
     _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$_f" in *pq2_0*|*ptq1_0*) return 0 ;; *) return 1 ;; esac
 }

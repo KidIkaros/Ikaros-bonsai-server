@@ -13,6 +13,9 @@
 #   BONSAI_PORT=8081        listening port
 #   BONSAI_CTX=65536        context size (Hermes needs >= 64000)
 #   BONSAI_NGL=99           GPU layers, 0 for CPU-only
+#   BONSAI_KV_TYPE=q8_0     KV cache type: q8_0 (default), q4_0, iq4_nl, q5_0,
+#                           f16 to disable. See docs/HARDWARE.md.
+#   BONSAI_KV_TYPE_K / _V   set K and V independently (advanced)
 #   BONSAI_MODELS_DIR=path  models directory
 #   BONSAI_EXTRA_ARGS="..." extra llama-server flags
 
@@ -24,14 +27,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 OPEN_BROWSER=1
 BACKGROUND=0
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --no-browser) OPEN_BROWSER=0 ;;
         --background) BACKGROUND=1 ;;
-        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) die "Unknown option: $arg" ;;
+        --kv-type)    export BONSAI_KV_TYPE="${2:-}"; shift ;;
+        --kv-type-k)  export BONSAI_KV_TYPE_K="${2:-}"; shift ;;
+        --kv-type-v)  export BONSAI_KV_TYPE_V="${2:-}"; shift ;;
+        -h|--help)    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "Unknown option: $1" ;;
     esac
+    shift
 done
+
 
 if detect_is_stale; then
     "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1
@@ -81,6 +89,21 @@ if [ "$BACKEND" = "rocm" ] && [ "${GFX_SUPPORTED:-1}" = "0" ]; then
     fi
 fi
 
+# Validate the KV cache types before starting, so a typo fails here with the
+# allowed list rather than deep inside llama-server.
+KV_TYPE_K="$(kv_type_k)"
+KV_TYPE_V="$(kv_type_v)"
+for _t in "$KV_TYPE_K" "$KV_TYPE_V"; do
+    kv_type_valid "$_t" || die "Unknown KV cache type '$_t'.
+       Allowed: $KV_CACHE_TYPES
+       Example: BONSAI_KV_TYPE=q8_0 ./scripts/start-server.sh"
+done
+
+KV_ARGS=()
+if [ "$(kv_type_effective)" != "f16" ]; then
+    KV_ARGS=(--cache-type-k "$KV_TYPE_K" --cache-type-v "$KV_TYPE_V")
+fi
+
 # Only pass --n-gpu-layers when there is actually a GPU backend in play.
 NGL_ARGS=()
 case "$BACKEND" in
@@ -102,6 +125,7 @@ CMD=(
     --flash-attn on
     --no-warmup
     --jinja
+    "${KV_ARGS[@]}"
     "${NGL_ARGS[@]}"
     "${EXTRA_ARGS[@]}"
 )
@@ -111,6 +135,11 @@ printf '  %s\n' "${C_DIM}${CMD[*]}${C_RESET}"
 echo ""
 info "Backend     : $BACKEND"
 info "Models dir  : $MODELS_DIR  ($_gguf_count file(s))"
+info "KV cache    : $(kv_type_effective)"
+if [ "$KV_TYPE_K" = "q4_0" ] || [ "$KV_TYPE_V" = "q4_0" ]; then
+    dim "  q4_0 is the smallest option but costs some quality."
+    dim "  --kv-mean-center improves q4_0 K quality; see docs/HARDWARE.md."
+fi
 info "Web UI      : http://localhost:$BONSAI_PORT"
 info "OpenAI API  : http://localhost:$BONSAI_PORT/v1"
 echo ""

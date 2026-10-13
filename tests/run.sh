@@ -266,6 +266,64 @@ if version_ge 7.2.3 7.2; then pass "version_ge patch suffix"; else fail "version
 assert_eq "human_size GB" "1.5 GB" "$(human_size 1610612736)"
 assert_eq "human_size MB" "237 MB" "$(human_size 248512512)"
 
+group "KV cache type"
+
+for _t in $KV_CACHE_TYPES; do
+    if kv_type_valid "$_t"; then pass "accepts $_t"; else fail "should accept $_t"; fi
+done
+for _t in bogus q3_weird "" q4_2; do
+    if kv_type_valid "$_t"; then fail "should reject '$_t'"; else pass "rejects '$_t'"; fi
+done
+
+# Resolution: the default, an override, an asymmetric pair, and off.
+assert_eq "default KV type" "q8_0" "$(kv_type_effective)"
+(
+    BONSAI_KV_TYPE=q4_0
+    # shellcheck disable=SC2034
+    assert_eq "BONSAI_KV_TYPE overrides both halves" "q4_0" "$(kv_type_effective)"
+)
+(
+    BONSAI_KV_TYPE=iq4_nl
+    # shellcheck disable=SC2034
+    BONSAI_KV_TYPE_V=q8_0
+    assert_eq "one half can be overridden" "K=iq4_nl V=q8_0" "$(kv_type_effective)"
+)
+(
+    # shellcheck disable=SC2034  # read by kv_type_effective in common.sh
+    BONSAI_KV_TYPE=f16
+    assert_eq "f16 on both halves disables quantization" "f16" "$(kv_type_effective)"
+)
+
+# Regression: kv_type_valid used to leak its loop variable, so callers reported
+# the last known type instead of the invalid one they passed.
+_t="SENTINEL"
+kv_type_valid "definitely-not-a-type" || true
+assert_eq "kv_type_valid does not leak its loop variable" "SENTINEL" "$_t"
+
+# The static list must match what the installed binary actually accepts, so it
+# cannot drift from the build. Skipped when no binary has been fetched.
+# llama_server_bin needs BACKEND, which is not set in the test context, so fall
+# back to globbing whatever has been fetched.
+_kvbin="$(llama_server_bin 2>/dev/null || true)"
+if [ -z "$_kvbin" ]; then
+    for _c in "$REPO_ROOT"/bin/*/bin/llama-server "$REPO_ROOT"/bin/*/llama-server; do
+        [ -x "$_c" ] && { _kvbin="$_c"; break; }
+    done
+fi
+if [ -n "$_kvbin" ]; then
+    # The binary prints "a, b, c"; normalise to space separated before comparing.
+    _reported="$("$_kvbin" --help 2>&1 | sed -n '/--cache-type-k TYPE/,/default:/p' \
+        | sed -n 's/.*allowed values: *//p' | head -1 | tr ',' ' ' | tr -s ' ')"
+    _reported="${_reported# }"; _reported="${_reported% }"
+    if [ -n "$_reported" ]; then
+        assert_eq "KV_CACHE_TYPES matches the installed binary" "$_reported" "$KV_CACHE_TYPES"
+    else
+        pass "binary KV type list (could not parse --help)"
+    fi
+else
+    pass "binary KV type list (skipped: no binary fetched)"
+fi
+
 group "stop-server safety"
 
 # Regression: stop-server.sh used to fall back to "kill whatever is on the

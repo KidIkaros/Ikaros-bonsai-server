@@ -12,11 +12,11 @@ comfortable inference at the default 65536 context, not hard limits. A `0` in
 `min_vram_gb` marks an auxiliary file (a vision projector) that is loaded
 alongside a model rather than run on its own.
 
-**These numbers are dominated by the KV cache, not the weights.** At 65536 tokens the
-cache alone measured 7.1 GB on the 27B, 9.7 GB on the 8B and 7.5 GB on the 1.7B, so the
-requirements cluster by context rather than by model size. The 27B figures are anchored
-on a measured total; the smaller ones are estimated from the measured cache plus the
-known weight size. See [HARDWARE.md](HARDWARE.md#vram-and-ram).
+**These numbers assume the defaults: 65536 context and `q8_0` KV cache.** They are
+dominated by the KV cache, not the weights - at 65536 tokens the cache alone measured
+9.0 GB on the 8B before quantization, and 4.8 GB after. Setting `BONSAI_KV_TYPE=f16`
+adds roughly 4 GB to the 8B row and about 3 GB to the 27B row. See
+[HARDWARE.md](HARDWARE.md#vram-and-ram).
 
 `--list` marks each row `*` when it fits the detected machine and `-` when it does not.
 
@@ -63,17 +63,17 @@ The `prism-ml` family. These are the models upstream tests against.
 
 | Model | File | Size | Min VRAM | Min RAM |
 |---|---|---|---|---|
-| Bonsai 2 27B | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7.21 GB | 14 GB | 18 GB |
-| Bonsai 2 27B | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB | 13 GB | 16 GB |
+| Bonsai 2 27B | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7.21 GB | 11 GB | 15 GB |
+| Bonsai 2 27B | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB | 10 GB | 14 GB |
 | Bonsai 2 27B (vision) | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | 0.63 GB | - | - |
-| Ternary-Bonsai 27B | `Ternary-Bonsai-27B-Q2_g64.gguf` | 7.59 GB | 15 GB | 19 GB |
-| Ternary-Bonsai 8B | `Ternary-Bonsai-8B-PQ2_0.gguf` | 2.18 GB | 12 GB | 14 GB |
-| Ternary-Bonsai 4B | `Ternary-Bonsai-4B-PQ2_0.gguf` | 1.08 GB | 9 GB | 12 GB |
-| Ternary-Bonsai 1.7B | `Ternary-Bonsai-1.7B-PQ2_0.gguf` | 0.46 GB | 8 GB | 10 GB |
-| Bonsai 27B | `Bonsai-27B-Q1_0.gguf` | 3.80 GB | 11 GB | 14 GB |
-| Bonsai 8B | `Bonsai-8B-Q1_0.gguf` | 1.16 GB | 11 GB | 13 GB |
-| Bonsai 4B | `Bonsai-4B-Q1_0.gguf` | 0.57 GB | 9 GB | 11 GB |
-| Bonsai 1.7B | `Bonsai-1.7B-Q1_0.gguf` | 0.25 GB | 8 GB | 10 GB |
+| Ternary-Bonsai 27B | `Ternary-Bonsai-27B-Q2_g64.gguf` | 7.59 GB | 11 GB | 15 GB |
+| Ternary-Bonsai 8B | `Ternary-Bonsai-8B-PQ2_0.gguf` | 2.18 GB | 7 GB | 11 GB |
+| Ternary-Bonsai 4B | `Ternary-Bonsai-4B-PQ2_0.gguf` | 1.08 GB | 6 GB | 9 GB |
+| Ternary-Bonsai 1.7B | `Ternary-Bonsai-1.7B-PQ2_0.gguf` | 0.46 GB | 5 GB | 8 GB |
+| Bonsai 27B | `Bonsai-27B-Q1_0.gguf` | 3.80 GB | 8 GB | 12 GB |
+| Bonsai 8B | `Bonsai-8B-Q1_0.gguf` | 1.16 GB | 6 GB | 10 GB |
+| Bonsai 4B | `Bonsai-4B-Q1_0.gguf` | 0.57 GB | 5 GB | 8 GB |
+| Bonsai 1.7B | `Bonsai-1.7B-Q1_0.gguf` | 0.25 GB | 5 GB | 8 GB |
 
 The 1.7B entries are tagged `smoke-test`: small enough to download and verify a setup
 in seconds.

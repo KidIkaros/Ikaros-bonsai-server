@@ -59,20 +59,21 @@ Rough hardware guidance:
 
 | Your machine | Backend | Sensible model |
 |---|---|---|
-| AMD GPU, ROCm 7.2+, 16 GB | HIP | 27B `PQ2_0` (~14 GB VRAM) |
-| NVIDIA GPU, 16 GB | CUDA | 27B `PQ2_0` (~14 GB VRAM) |
-| GPU with 12 GB | either | 8B `PQ2_0` (~12 GB VRAM) |
+| AMD GPU, ROCm 7.2+, 12 GB+ | HIP | 27B `PQ2_0` (~11 GB) |
+| NVIDIA GPU, 12 GB+ | CUDA | 27B `PQ2_0` (~11 GB) |
+| GPU with 8 GB | either | 8B `PQ2_0` (~7 GB) |
 | Any Vulkan 1.2+ GPU | Vulkan | 8B `PQ2_0`, or `Q2_0_g64` for the 27B |
 | No GPU at all | CPU | 8B `Q1_0`, or 1.7B for a quick test |
 
 `setup.sh` picks for you and tells you what it chose.
 
-> **Read this before picking a model.** At the 65536-token context Hermes requires,
-> the **KV cache costs roughly 7-10 GB on its own**, whatever the model size. It is
-> usually the biggest single consumer of VRAM, not the weights. A 27B that fits in
-> 14 GB and a 1.7B that needs 8 GB are both real numbers. Dropping the context
-> shrinks the cache proportionally - see
-> [docs/HARDWARE.md](docs/HARDWARE.md#vram-and-ram) for the measurements.
+> **Read this before picking a model.** At the 65536-token context Hermes requires, the
+> **KV cache is usually the biggest consumer of VRAM, not the weights** - 9 GB on the
+> 8B before any quantization. This project therefore quantizes it by default
+> (`BONSAI_KV_TYPE=q8_0`), which cuts the cache by 1.88x at negligible quality cost and
+> is what makes the 27B fit a 12 GB card. See
+> [docs/HARDWARE.md](docs/HARDWARE.md#vram-and-ram) for the measurements and the other
+> options.
 
 ## Pointing Hermes at it
 
@@ -146,6 +147,8 @@ matrix.
 
 BONSAI_PORT=9000 ./scripts/start-server.sh   # different port
 BONSAI_CTX=32768 ./scripts/start-server.sh   # smaller context, less VRAM
+BONSAI_KV_TYPE=iq4_nl ./scripts/start-server.sh   # smaller KV cache, more models fit
+BONSAI_KV_TYPE=f16 ./scripts/start-server.sh      # no KV quantization
 ```
 
 ## Running it as a service (optional)
@@ -207,6 +210,8 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | `BONSAI_PORT` | `8081` | listening port |
 | `BONSAI_CTX` | `65536` | context size |
 | `BONSAI_NGL` | `99` | GPU layers |
+| `BONSAI_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
+| `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
 | `BONSAI_MODELS_DIR` | `./models` | where models are stored |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |

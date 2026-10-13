@@ -102,6 +102,52 @@ own installation:
 ./scripts/build-from-source.sh
 ```
 
+### Out of memory when loading a model
+
+Almost always the KV cache, not the weights. The 8B needs 9.0 GB of cache at 65536
+tokens before quantization. Check the log:
+
+```bash
+grep -E "allocating|failed to allocate" .state/server.log | tail -3
+```
+
+`failed to allocate buffer for kv cache` means exactly that. Options, best first:
+
+1. **Use the default.** `BONSAI_KV_TYPE` already defaults to `q8_0`, which is 1.88x
+   smaller. If you have it set to `f16`, unset it.
+2. **Push further:** `BONSAI_KV_TYPE=iq4_nl` is 3.56x smaller. Expect some quality loss.
+3. **Shrink the context:** `BONSAI_CTX=32768`. Only if you are not using Hermes, which
+   needs 64000 or more.
+4. **Use a smaller model:** the 8B at `q8_0` needs ~7 GB, the 1.7B ~5 GB.
+
+See [HARDWARE.md](HARDWARE.md#vram-and-ram) for the measured numbers.
+
+### `Unknown KV cache type '...'`
+
+The value is not one this build accepts. The error prints the allowed list:
+
+```
+f32 f16 bf16 q8_0 q4_0 q4_1 iq4_nl q5_0 q5_1
+```
+
+Note that `--kv-type` sets both K and V; `BONSAI_KV_TYPE_K` / `BONSAI_KV_TYPE_V` or
+`--kv-type-k` / `--kv-type-v` override one half.
+
+### Output quality dropped after changing the KV type
+
+Expected with `q4_0`. `q8_0` is treated as near-lossless; `q4_0` is not, particularly on
+long contexts and reasoning-heavy prompts. Either go back to `q8_0`:
+
+```bash
+BONSAI_KV_TYPE=q8_0 ./scripts/start-server.sh
+```
+
+or try `iq4_nl`, which is usually better than `q4_0` at the same size, or add
+`--kv-mean-center` if you have a calibration file (see
+[HARDWARE.md](HARDWARE.md#a-quality-lever-for-q4_0-k)).
+
+This project has measured memory, not quality. Test on your own prompts.
+
 ### Model fails to load on AMD, or garbage output
 
 Your gfx target may not be in the prebuilt's `GPU_TARGETS`. `detect.sh` says so:
