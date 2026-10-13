@@ -13,6 +13,13 @@
 #   ./scripts/assess.sh --kv-matrix        every KV type side by side
 #   ./scripts/assess.sh --measure          measure KV cost for installed models
 #   ./scripts/assess.sh --measure --speed  also benchmark tokens per second
+#   ./scripts/assess.sh --sweep            split the model across VRAM and RAM,
+#                                          measuring tokens per second at each split
+#
+# --sweep answers "how much of this model should go on the GPU?". llama.cpp can
+# keep some layers in VRAM and run the rest from system RAM, so a model larger
+# than VRAM can still run, just slower. The sweep measures the curve instead of
+# guessing it.
 #
 # Measuring is a one-off cost per model: it loads the model briefly at a tiny
 # context to read its cache geometry, which is exact and cheap.
@@ -29,6 +36,10 @@ KV_TYPE="$(kv_type_effective)"
 DO_MEASURE=0
 DO_SPEED=0
 MATRIX=0
+SWEEP=0
+SWEEP_TOKENS=64
+SWEEP_LEVELS=""
+SWEEP_MODEL=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,6 +48,10 @@ while [ $# -gt 0 ]; do
         --measure)  DO_MEASURE=1 ;;
         --speed)    DO_SPEED=1 ;;
         --kv-matrix) MATRIX=1 ;;
+        --sweep)    SWEEP=1 ;;
+        --sweep-tokens) SWEEP_TOKENS="${2:-64}"; shift ;;
+        --sweep-levels) SWEEP_LEVELS="${2:-}"; shift ;;
+        --model)    SWEEP_MODEL="${2:-}"; shift ;;
         -h|--help)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -95,10 +110,16 @@ measure_kv() {
     _pid=$!
 
     _mib=""
+    _layers=""
     for _ in $(seq 1 60); do
-        _mib="$(grep -a -oE 'llama_kv_cache: *size = *[0-9.]+ MiB' "$_log" 2>/dev/null \
-            | head -1 | grep -oE '[0-9.]+' || true)"
-        [ -n "$_mib" ] && break
+        # One line carries everything: "size = 1296.00 MiB ( 32768 cells, 36
+        # layers, 4/1 seqs), K (q4_0): ...".
+        _line="$(grep -a -oE 'llama_kv_cache: *size = *[0-9.]+ MiB \( *[0-9]+ cells, *[0-9]+ layers' "$_log" 2>/dev/null | head -1 || true)"
+        if [ -n "$_line" ]; then
+            _mib="$(printf '%s' "$_line" | grep -oE '[0-9.]+ MiB' | grep -oE '[0-9.]+')"
+            _layers="$(printf '%s' "$_line" | grep -oE '[0-9]+ layers' | grep -oE '[0-9]+')"
+            break
+        fi
         kill -0 "$_pid" 2>/dev/null || break
         sleep 1
     done
@@ -112,19 +133,20 @@ measure_kv() {
     fi
 
     _bpc="$(awk -v mib="$_mib" 'BEGIN { printf "%.4f", mib * 1048576 / 512 }')"
-    kv_cost_set "$_model" "$_bpc"
-    info "measured $(basename "$_model"): ${_mib} MiB at 512 cells (${_bpc} bytes/cell)"
+    kv_cost_set "$_model" "$_bpc" "${_layers:-}"
+    info "measured $(basename "$_model"): ${_mib} MiB at 512 cells, ${_layers:-?} layers (${_bpc} bytes/cell)"
 }
 
-# measure_speed MODEL CONTEXT KV - run a short generation and record tok/s.
-measure_speed() {
-    _model="$1" _ctx="$2" _kv="$3"
-    _port=$((BONSAI_PORT + 201))
-    _log="$STATE_DIR/assess-speed.log"
+# bench_tps MODEL NGL CONTEXT KV TOKENS - run one generation, print tok/s.
+# Prints nothing and fails if the server cannot start or produce a number.
+bench_tps() {
+    _model="$1" _ngl="$2" _ctx="$3" _kv="$4" _tokens="$5"
+    _port="$BENCH_PORT"
+    _log="$BENCH_LOG"
 
     "$SERVER_BIN" -m "$_model" --port "$_port" --ctx-size "$_ctx" \
         --cache-type-k "$_kv" --cache-type-v "$_kv" \
-        --n-gpu-layers "$BONSAI_NGL" --no-warmup --jinja >"$_log" 2>&1 &
+        --n-gpu-layers "$_ngl" --no-warmup --jinja >"$_log" 2>&1 &
     _pid=$!
 
     _ready=0
@@ -136,9 +158,9 @@ measure_speed() {
 
     _tps=""
     if [ "$_ready" = 1 ]; then
-        _resp="$(curl -s --max-time 180 "http://127.0.0.1:$_port/v1/chat/completions" \
+        _resp="$(curl -s --max-time 300 "http://127.0.0.1:$_port/v1/chat/completions" \
             -H 'Content-Type: application/json' \
-            -d '{"messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":128,"temperature":0.7}' \
+            -d "$(printf '{"messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":%s,"temperature":0.7}' "$_tokens")" \
             2>/dev/null || true)"
         _tps="$(printf '%s' "$_resp" | python3 -c '
 import json, sys
@@ -152,11 +174,36 @@ except Exception:
     kill "$_pid" 2>/dev/null || true
     wait "$_pid" 2>/dev/null || true
 
-    if [ -z "$_tps" ] || [ "$_tps" = "0" ]; then
+    [ -n "$_tps" ] && [ "$_tps" != "0" ] || return 1
+    printf '%s' "$_tps"
+}
+
+# explain_bench_failure LOG - say why a benchmark produced nothing.
+explain_bench_failure() {
+    if grep -qa "out of memory\|failed to allocate" "$1" 2>/dev/null; then
+        dim "  Not enough free memory for this configuration."
+        if grep -qa "kv cache" "$1" 2>/dev/null; then
+            dim "  The KV cache is what did not fit. A smaller BONSAI_CTX or a"
+            dim "  smaller BONSAI_KV_TYPE will free room."
+        fi
+    else
+        dim "  See $1"
+    fi
+}
+
+# measure_speed MODEL CONTEXT KV - run a short generation and record tok/s.
+measure_speed() {
+    _model="$1" _ctx="$2" _kv="$3"
+    BENCH_PORT=$((BONSAI_PORT + 201))
+    BENCH_LOG="$STATE_DIR/assess-speed.log"
+
+    _tps="$(bench_tps "$_model" "$BONSAI_NGL" "$_ctx" "$_kv" 128 || true)"
+
+    if [ -z "$_tps" ]; then
         warn "Could not measure speed for $(basename "$_model") at $_ctx/$_kv."
         # Distinguish "not enough memory right now" from a real failure. The
         # assessment models total capacity; a benchmark needs free capacity.
-        if grep -qa "out of memory\|failed to allocate" "$_log" 2>/dev/null; then
+        if grep -qa "out of memory\|failed to allocate" "$BENCH_LOG" 2>/dev/null; then
             _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
             if [ -n "$_other" ]; then
                 dim "  Not enough free memory. Something else is holding it, on port"
@@ -166,7 +213,7 @@ except Exception:
                 dim "  Not enough free memory for this model at $_ctx context."
             fi
         else
-            dim "  See $_log"
+            dim "  See $BENCH_LOG"
         fi
         return 1
     fi
@@ -178,7 +225,7 @@ if [ "$DO_MEASURE" = 1 ]; then
     step "Measuring KV cache cost"
     dim "  One brief load per model at a 512-token context."
     for _m in "${MODELS[@]}"; do
-        if [ -n "$(kv_cost_get "$_m" || true)" ]; then
+        if kv_measured "$_m"; then
             dim "  already measured: $(basename "$_m")"
             continue
         fi
@@ -194,6 +241,142 @@ if [ "$DO_MEASURE" = 1 ]; then
         done
     fi
     echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# Offload sweep: split the model across VRAM and RAM
+# ---------------------------------------------------------------------------
+
+if [ "$SWEEP" = 1 ]; then
+    # Pick the model: an explicit one, the only measured one, or ask.
+    if [ -n "$SWEEP_MODEL" ]; then
+        SWEEP_PATH="$SWEEP_MODEL"
+        [ -f "$SWEEP_PATH" ] || die "No such model: $SWEEP_PATH"
+    else
+        _measured=()
+        for _m in "${MODELS[@]}"; do
+            kv_measured "$_m" && _measured+=("$_m")
+        done
+        case "${#_measured[@]}" in
+            0) die "No measured models. Run first: ./scripts/assess.sh --measure" ;;
+            1) SWEEP_PATH="${_measured[0]}" ;;
+            *)
+                step "Which model?"
+                _i=0
+                for _m in "${_measured[@]}"; do
+                    _i=$((_i + 1))
+                    printf '  %2d. %s\n' "$_i" "$(basename "$_m")" >&2
+                done
+                _pick="$(ask "Model number" "1")"
+                case "$_pick" in ''|*[!0-9]*) die "Expected a number, got '$_pick'." ;; esac
+                SWEEP_PATH="${_measured[$((_pick - 1))]}"
+                [ -f "$SWEEP_PATH" ] || die "No model for selection '$_pick'."
+                ;;
+        esac
+    fi
+
+    N_LAYER="$(kv_layers_get "$SWEEP_PATH" || true)"
+    [ -n "$N_LAYER" ] || die "No layer count for $(basename "$SWEEP_PATH").
+       Re-measure it: ./scripts/assess.sh --measure"
+
+    W_GB="$(awk -v b="$(model_size_bytes "$SWEEP_PATH")" 'BEGIN { printf "%.2f", b/1073741824 }')"
+    KV_MIB="$(kv_mib "$SWEEP_PATH" "$CONTEXT" "$KV_TYPE" || true)"
+    [ -n "$KV_MIB" ] || die "No KV cost for $(basename "$SWEEP_PATH"). Re-measure it."
+    KV_GB="$(awk -v m="$KV_MIB" 'BEGIN { printf "%.2f", m/1024 }')"
+
+    # How many layers fit in the budget once the cache has taken its share.
+    MAX_FIT="$(awk -v budget="$BUDGET_AVAIL" -v kv="$KV_GB" -v w="$W_GB" -v n="$N_LAYER" \
+        'BEGIN { p = w / n; if (p <= 0) { print n; exit } f = int((budget - kv) / p); if (f < 0) f = 0; if (f > n) f = n; print f }')"
+
+    if [ -n "$SWEEP_LEVELS" ]; then
+        LEVELS="$(printf '%s' "$SWEEP_LEVELS" | tr ',' ' ')"
+    else
+        LEVELS="$(awk -v m="$MAX_FIT" 'BEGIN {
+            a = int(m/3); b = int(2*m/3)
+            printf "0 %d %d %d", a, b, m
+        }')"
+    fi
+    # Deduplicate and order, so a small model does not bench the same split twice.
+    # Word splitting is intended here: the levels are a space separated list
+    # that needs one per line for sort.
+    # shellcheck disable=SC2086
+    LEVELS="$(printf '%s\n' $LEVELS | sort -n -u | tr '\n' ' ')"
+
+    step "Offload sweep"
+    info "Model    : $(basename "$SWEEP_PATH")"
+    info "Layers   : $N_LAYER   weights ${W_GB} GB   KV at $CONTEXT/$KV_TYPE ${KV_GB} GB"
+    info "Budget   : ${BUDGET_AVAIL} GB of $BUDGET_LABEL"
+    if [ "$MAX_FIT" -lt "$N_LAYER" ]; then
+        warn "Only $MAX_FIT of $N_LAYER layers fit; the rest run from system RAM."
+    else
+        info "The whole model fits, so the sweep shows the curve up to full offload."
+    fi
+    dim "  ${SWEEP_TOKENS} tokens per measurement, $(printf '%s' "$LEVELS" | wc -w | tr -d ' ') configurations."
+    echo ""
+
+    _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
+    if [ -n "$_other" ]; then
+        warn "Something is on port $BONSAI_PORT (pid $_other); it may hold memory."
+        dim "  Benchmarks need free memory. Stop it for a clean sweep."
+    fi
+
+    printf '  %8s %9s %9s %10s %10s\n' "on GPU" "VRAM" "RAM" "tok/s" "vs all-CPU"
+    printf '  %s\n' "--------------------------------------------------------"
+
+    BASE_TPS=""
+    BEST_NGL=""
+    BEST_TPS=""
+    for _ngl in $LEVELS; do
+        BENCH_PORT=$((BONSAI_PORT + 202))
+        BENCH_LOG="$STATE_DIR/assess-sweep-$_ngl.log"
+
+        read -r _vram _ram <<<"$(kv_placement "$N_LAYER" "$_ngl" "$W_GB" "$KV_GB")"
+
+        _tps="$(bench_tps "$SWEEP_PATH" "$_ngl" "$CONTEXT" "$KV_TYPE" "$SWEEP_TOKENS" || true)"
+
+        if [ -z "$_tps" ]; then
+            printf '  %8s %8sG %8sG %10s %10s\n' "$_ngl" "$_vram" "$_ram" "-" "-"
+            explain_bench_failure "$BENCH_LOG"
+            continue
+        fi
+
+        if [ "$_ngl" = "0" ]; then BASE_TPS="$_tps"; fi
+        _rel=""
+        if [ -n "$BASE_TPS" ]; then
+            _rel="$(awk -v a="$_tps" -v b="$BASE_TPS" 'BEGIN { printf "%.1fx", (b > 0 ? a/b : 1) }')"
+        fi
+
+        printf '  %8s %8sG %8sG %10s %10s\n' "$_ngl" "$_vram" "$_ram" "$_tps" "$_rel"
+
+        if [ -z "$BEST_TPS" ] || awk -v a="$_tps" -v b="$BEST_TPS" 'BEGIN { exit !(a > b) }'; then
+            BEST_TPS="$_tps"; BEST_NGL="$_ngl"
+        fi
+        speed_set "$SWEEP_PATH" "$CONTEXT" "$KV_TYPE" "$_tps"
+    done
+
+    echo ""
+    if [ -n "$BEST_NGL" ]; then
+        if [ "$BEST_NGL" = "$N_LAYER" ]; then
+            info "Best: all $N_LAYER layers on the GPU, ${BEST_TPS} tok/s."
+        elif [ "$BEST_NGL" = "0" ]; then
+            info "Best: everything on the CPU, ${BEST_TPS} tok/s."
+            dim "  Offloading did not help here; memory bandwidth is the limit."
+        else
+            info "Best: $BEST_NGL of $N_LAYER layers on the GPU, ${BEST_TPS} tok/s."
+        fi
+        if [ -n "$BASE_TPS" ] && [ "$BEST_NGL" != "0" ]; then
+            awk -v a="$BEST_TPS" -v b="$BASE_TPS" \
+                'BEGIN { if (b > 0) printf "  That is %.1fx the all-CPU rate (%.1f tok/s).\n", a/b, b }' >&2
+        fi
+        echo ""
+        dim "  Serve it with:"
+        dim "    BONSAI_NGL=$BEST_NGL ./scripts/start-server.sh"
+    else
+        warn "No configuration produced a measurement."
+        dim "  Something is holding memory, or the model is too large for this machine."
+    fi
+    echo ""
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------

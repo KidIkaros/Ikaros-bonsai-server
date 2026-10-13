@@ -241,6 +241,23 @@ estimates. Treat the last two columns as close guidance, not exact figures.
 The headline consequence: **with `q8_0` the 27B fits in about 11 GB, so a 12 GB card can
 run it at the full 64K context Hermes needs.** On `f16` it needs ~14 GB and does not.
 
+### Splitting across VRAM and RAM
+
+`assess.sh --sweep` measures the offload curve rather than estimating it. On the 8B at
+32768 with `q8_0`, measured here:
+
+| Layers on GPU | VRAM | RAM | tok/s | vs all-CPU |
+|---|---|---|---|---|
+| 0 | 0.0 GB | 4.4 GB | 16.2 | 1.0x |
+| 12 | 3.1 GB | 1.4 GB | 21.9 | 1.4x |
+| 24 | 3.7 GB | 0.7 GB | 34.3 | 2.1x |
+| 36 | 4.4 GB | 0.0 GB | 75.5 | 4.7x |
+
+Full offload is 4.7x the all-CPU rate, and the curve is steep at the top, so partial
+offload buys less than it looks like it should. Note that the cache follows the layers:
+`-ngl 0` puts it in RAM (llama.cpp logs a CPU KV buffer), and offloading any layer moves
+it to VRAM. That is why the all-CPU row needs 4.4 GB of RAM for a 2.0 GB model.
+
 ### Trading context for memory
 
 Lowering the context shrinks the cache linearly, and stacks with the type:

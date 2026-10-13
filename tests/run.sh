@@ -403,6 +403,26 @@ else
     pass "unmeasured model produces no KV size"
 fi
 
+# Placement: the cache follows the layers. Regression for a real bug - the
+# first version reported RAM as weights only, understating the all-CPU row by
+# the whole KV cache (4.4 GB instead of 0.2 GB on the 8B).
+assert_eq "all-CPU puts weights and cache in RAM" "0.0 4.4" \
+    "$(kv_placement 36 0 2.03 2.39)"
+assert_eq "full offload puts everything in VRAM" "4.4 0.0" \
+    "$(kv_placement 36 36 2.03 2.39)"
+assert_eq "partial offload splits weights, cache stays on GPU" "3.1 1.4" \
+    "$(kv_placement 36 12 2.03 2.39)"
+# Each column is rounded on its own, so the pair can differ from the true total
+# by up to a rounding step. Assert the real invariant, not a coincidence.
+_sum="$(kv_placement 36 12 2.03 2.39 | awk '{ printf "%.2f", $1 + $2 }')"
+if awk -v s="$_sum" 'BEGIN { d = s - 4.42; if (d < 0) d = -d; exit !(d <= 0.15) }'; then
+    pass "the two columns sum to the model total within rounding"
+else
+    fail "the two columns sum to the model total" "got $_sum, expected about 4.42"
+fi
+assert_eq "placement for the 1.7B all-CPU" "0.0 4.0" \
+    "$(kv_placement 28 0 0.23 3.72)"
+
 speed_set "fake-model.gguf" 65536 q8_0 "186.8"
 assert_eq "speed_set/speed_get round-trips" "186.8" "$(speed_get fake-model.gguf 65536 q8_0)"
 if speed_get "fake-model.gguf" 32768 q8_0 >/dev/null 2>&1; then

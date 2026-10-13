@@ -144,6 +144,7 @@ matrix.
 ./scripts/assess.sh --kv-matrix    # every KV cache type side by side
 ./scripts/assess.sh --measure      # measure KV cost for installed models
 ./scripts/assess.sh --measure --speed   # also benchmark tokens per second
+./scripts/assess.sh --sweep             # split across VRAM and RAM, measure each
 ```
 
 It reports weights, KV cache, total and headroom per model, then tells you the largest
@@ -151,7 +152,7 @@ one that fits:
 
 ```
   model                                         weights       KV    total     spare  verdict
-  prism-ml_Bonsai-1.7B-gguf__Bonsai-1.7B-Q1_0      0.2G     3.7G     3.9G     10.1G  fits  186.8 tok/s
+  prism-ml_Bonsai-1.7B-gguf__Bonsai-1.7B-Q1_0      0.2G     3.7G     3.9G     10.1G  fits  194.9 tok/s
   prism-ml_Ternary-Bonsai-8B-gguf__Ternary-Bon     2.0G     4.8G     6.8G      7.2G  fits
 ```
 
@@ -164,10 +165,39 @@ Two things make this different from a generic fit calculator:
   and not fitting.
 
 Speed is **measured, never estimated**. Run `--measure --speed` once per model; until
-then the column is simply absent rather than filled with a guess.
+then the column is simply absent rather than filled with a guess. Measured numbers move
+a few percent between runs, so treat them as a guide rather than a constant.
 
 `--measure` is a one-off per model: it loads each one briefly at a 512-token context to
 read its cache geometry, which is exact and cheap.
+
+### Splitting a model across VRAM and system RAM
+
+A model does not have to fit in VRAM. llama.cpp can keep some layers on the GPU and run
+the rest from system RAM, so a model larger than your card still runs, just slower. The
+question is where the knee is, and that is worth measuring rather than guessing:
+
+```bash
+./scripts/assess.sh --sweep
+```
+
+```
+    on GPU      VRAM       RAM      tok/s vs all-CPU
+         0      0.0G      4.4G       16.2       1.0x
+        12      3.1G      1.4G       21.9       1.4x
+        24      3.7G      0.7G       34.3       2.1x
+        36      4.4G      0.0G       75.5       4.7x
+
+Best: all 36 layers on the GPU, 75.5 tok/s.
+```
+
+It picks the splits itself from the model's layer count and your free budget, measures a
+short generation at each, and prints the command to serve the winner. The VRAM and RAM
+columns account for the fact that the KV cache follows the layers: with `-ngl 0` the
+cache lives in RAM, and offloading any layer moves it to VRAM.
+
+Options: `--sweep-tokens N` to change the sample size, `--sweep-levels 0,18,36` to pick
+the splits yourself, `--context` and `--kv-type` as above.
 
 ## Everyday use
 

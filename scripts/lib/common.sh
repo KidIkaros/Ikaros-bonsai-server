@@ -225,7 +225,8 @@ kv_cost_get() {
     awk -F'\t' -v k="$_key" '$1 == k { print $2; found=1 } END { exit !found }' "$KV_COST_CACHE"
 }
 
-# kv_cost_set MODEL BYTES_PER_CELL - record a measurement, replacing any old one.
+# kv_cost_set MODEL BYTES_PER_CELL [LAYERS] - record a measurement, replacing
+# any old one. The layer count lets the offload sweep choose sensible steps.
 kv_cost_set() {
     mkdir -p "$STATE_DIR"
     local _key _tmp
@@ -236,8 +237,24 @@ kv_cost_set() {
     else
         : > "$_tmp"
     fi
-    printf '%s\t%s\n' "$_key" "$2" >> "$_tmp"
+    printf '%s\t%s\t%s\n' "$_key" "$2" "${3:-}" >> "$_tmp"
     mv "$_tmp" "$KV_COST_CACHE"
+}
+
+# kv_layers_get MODEL - print the transformer layer count, or nothing.
+kv_layers_get() {
+    [ -f "$KV_COST_CACHE" ] || return 1
+    local _key _v
+    _key="$(basename "$1")"
+    _v="$(awk -F'\t' -v k="$_key" '$1 == k { print $3; found=1 } END { exit !found }' "$KV_COST_CACHE")"
+    [ -n "$_v" ] || return 1
+    printf '%s' "$_v"
+}
+
+# kv_measured MODEL - succeed when the model has a complete measurement.
+kv_measured() {
+    kv_cost_get "$1" >/dev/null 2>&1 || return 1
+    kv_layers_get "$1" >/dev/null 2>&1
 }
 
 # kv_mib MODEL CELLS TYPE - KV cache size in MiB for a measured model, or nothing.
@@ -272,6 +289,20 @@ speed_set() {
     fi
     printf '%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$4" >> "$_tmp"
     mv "$_tmp" "$SPEED_CACHE"
+}
+
+# kv_placement LAYERS NGL WEIGHTS_GB KV_GB - print "VRAM RAM" in GB.
+#
+# The KV cache follows the layers. With -ngl 0 there are no GPU layers, so
+# llama.cpp allocates a CPU KV buffer and the whole cache lives in RAM;
+# offloading any layer moves the cache to VRAM. Verified against the loader:
+# -ngl 0 logs "CPU KV buffer size", not a ROCm one.
+kv_placement() {
+    awk -v n="$1" -v g="$2" -v w="$3" -v kv="$4" 'BEGIN {
+        vram = (g > 0) ? (n > 0 ? g/n*w : 0) + kv : 0
+        ram  = (n > 0 ? (n-g)/n*w : 0) + ((g > 0) ? 0 : kv)
+        printf "%.1f %.1f", vram, ram
+    }'
 }
 
 # model_size_bytes MODEL - file size, or 0.
