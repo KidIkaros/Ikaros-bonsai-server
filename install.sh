@@ -101,10 +101,56 @@ chmod +x "$LINK"
 
 printf '%s\n' "$SELF_DIR" > "$MARKER"
 
+# Shell completion, installed when the shell's completion directory is
+# discoverable. Silently skipped otherwise: a missing completion dir is not a
+# failed install, and the command is always available via
+# `bonsai completions <shell>` for anyone who wants to place it by hand.
+_completion_dir=""
+case "${SHELL:-}" in
+    */zsh)
+        _completion_dir="${ZDOTDIR:-$HOME}/.zfunc"
+        ;;
+    */fish)
+        _completion_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions"
+        ;;
+    *)
+        _completion_dir="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions}"
+        ;;
+esac
+
 echo "Installed bonsai to $PREFIX"
 echo "  command : $LINK"
 echo "  scripts : $LIB_DIR"
 echo "  state   : $STATE_DIR"
+echo ""
+
+if [ -n "$_completion_dir" ] && mkdir -p "$_completion_dir" 2>/dev/null; then
+    _shell="bash"
+    case "${SHELL:-}" in */zsh) _shell="zsh" ;; */fish) _shell="fish" ;; esac
+    # bash's completion loader only auto-sources files named exactly after the
+    # command (no extension); zsh expects _<cmd> on the fpath; fish expects
+    # <cmd>.fish. Writing the wrong name means the file is never loaded.
+    case "$_shell" in
+        bash) _comp_name="bonsai" ;;
+        zsh)  _comp_name="_bonsai" ;;
+        fish) _comp_name="bonsai.fish" ;;
+    esac
+    if "$LINK" completions "$_shell" > "$_completion_dir/$_comp_name" 2>/dev/null &&
+       [ -s "$_completion_dir/$_comp_name" ]; then
+        echo "Tab completion installed: $_completion_dir/$_comp_name"
+        case "$_shell" in
+            zsh)  echo "  zsh: ensure ~/.zfunc is on your fpath, then: autoload -U compinit && compinit" ;;
+            fish) echo "  Restart fish to pick it up." ;;
+            *)    echo "  Start a new shell to pick it up." ;;
+        esac
+    else
+        echo "Tab completion skipped (could not write $_completion_dir)."
+        echo "  Install it by hand: bonsai completions $_shell"
+    fi
+else
+    echo "Tab completion not installed (no writable completion dir found)."
+    echo "  Install it by hand: bonsai completions <bash|zsh|fish>"
+fi
 echo ""
 
 # PATH guidance: only warn when the prefix's bin is genuinely absent from it.

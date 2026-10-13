@@ -1255,6 +1255,82 @@ else
     fail "tune should name bonsai apply and bonsai restart"
 fi
 
+group "shell completions"
+
+# Tab completion is the discoverability surface a new user explores with, so it
+# must emit for every supported shell and the bash one must actually complete.
+for _sh in bash zsh fish; do
+    _out="$(printf '%s' "$("$SCRIPTS/bonsai" completions "$_sh" 2>/dev/null || true)")"
+    if [ -n "$_out" ]; then
+        pass "completions $_sh emits a script"
+    else
+        fail "completions $_sh produced nothing"
+    fi
+done
+# The bash script must define and register the function, not just print words.
+_comp="$("$SCRIPTS/bonsai" completions bash 2>/dev/null || true)"
+if printf '%s' "$_comp" | grep -q "_bonsai_completions()"; then
+    pass "bash completion defines its function"
+else
+    fail "bash completion should define _bonsai_completions"
+fi
+if printf '%s' "$_comp" | grep -q "complete -F _bonsai_completions bonsai"; then
+    pass "bash completion registers with complete"
+else
+    fail "bash completion should register with complete -F"
+fi
+# Every command in the dispatcher must appear in the completion word list, or
+# the completion silently omits it.
+_comp_words="$(printf '%s' "$_comp" | grep -oE 'compgen -W "[^"]+"' | head -1 | sed 's/.*-W "//;s/"//')"
+_comp_missing=""
+for _c in start stop restart status logs show set speed fastest bench identity \
+           tune apply assess coverage models help; do
+    case " $_comp_words " in
+        *" $_c "*) ;;
+        *) _comp_missing="$_comp_missing $_c" ;;
+    esac
+done
+if [ -z "$_comp_missing" ]; then
+    pass "every command is in the completion list"
+else
+    fail "commands missing from completion:" "$_comp_missing"
+fi
+# An unknown shell must fail rather than silently emit nothing.
+if "$SCRIPTS/bonsai" completions tcsh >/dev/null 2>&1; then
+    fail "an unknown shell should fail"
+else
+    pass "an unknown shell fails cleanly"
+fi
+# install.sh must install completion when it can, and the command list must
+# mention it.
+if grep -q "completions" "$REPO_ROOT/install.sh"; then
+    pass "install.sh installs tab completion"
+else
+    fail "install.sh should install tab completion"
+fi
+# The filename must match each loader's convention or the file is never
+# sourced: bash wants the bare command name, zsh _<cmd>, fish <cmd>.fish.
+if grep -q 'bash) _comp_name="bonsai"' "$REPO_ROOT/install.sh"; then
+    pass "bash completion is named for the loader convention"
+else
+    fail "bash completion must be named 'bonsai' (no extension) to be auto-sourced"
+fi
+if grep -q 'zsh)  _comp_name="_bonsai"' "$REPO_ROOT/install.sh"; then
+    pass "zsh completion is named _bonsai"
+else
+    fail "zsh completion must be named _bonsai for the fpath"
+fi
+if grep -q 'fish) _comp_name="bonsai.fish"' "$REPO_ROOT/install.sh"; then
+    pass "fish completion is named bonsai.fish"
+else
+    fail "fish completion must be named bonsai.fish"
+fi
+if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai completions"; then
+    pass "bonsai help documents completions"
+else
+    fail "bonsai help should document completions"
+fi
+
 group "script syntax"
 
 _syntax_fail=""

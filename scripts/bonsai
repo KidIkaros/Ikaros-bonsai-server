@@ -17,6 +17,7 @@
 #   ./scripts/bonsai assess         what fits, and how the KV type changes it
 #   ./scripts/bonsai coverage       which settings have been tried, and which have not
 #   ./scripts/bonsai models         list installed models
+#   ./scripts/bonsai completions bash|zsh|fish   print shell tab-completion
 #
 # Settings live in .state/service.env. Editing it, or using `set`, is enough:
 # nothing needs reinstalling.
@@ -428,6 +429,72 @@ except Exception:
 
     help|--help|-h|"")
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+
+    completions)
+        # Shell completion for the 18 commands. Generated from one list so it
+        # cannot drift from the dispatcher: adding a command and forgetting
+        # here is the failure mode this prevents.
+        _shell="${1:-bash}"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models help"
+        case "$_shell" in
+            bash)
+                cat <<EOF
+# bash completion for bonsai. Install with:
+#   bonsai completions bash > ~/.local/share/bash-completion/completions/bonsai
+_bonsai_completions() {
+    local cur="\${COMP_WORDS[COMP_CWORD]}"
+    if [ "\$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=( \$(compgen -W "$_cmds" -- "\$cur") )
+        return 0
+    fi
+    case "\${COMP_WORDS[1]}" in
+        set)     COMPREPLY=( \$(compgen -W "port ctx ngl kv threads models moe-cache-mib spec-type" -- "\$cur") ) ;;
+        logs)    COMPREPLY=( \$(compgen -W "-f" -- "\$cur") ) ;;
+        *)       COMPREPLY=( \$(compgen -W "\$(bonsai models 2>/dev/null | grep -oE '[^ ]+\.gguf' | sed 's/\.gguf\$//')" -- "\$cur") ) ;;
+    esac
+    return 0
+}
+complete -F _bonsai_completions bonsai
+EOF
+                ;;
+            zsh)
+                cat <<EOF
+#compdef bonsai
+# zsh completion for bonsai. Install by placing in a directory on your
+# \$fpath, e.g. ~/.zfunc/_bonsai, then: autoload -U compinit && compinit
+_bonsai() {
+    local -a commands
+    commands=($_cmds)
+    _arguments -C \\
+        '1: :->command' \\
+        '*: :->args'
+    case \$state in
+        command)
+            _describe 'command' commands
+            ;;
+        args)
+            case \$words[2] in
+                set)  _values 'setting' port ctx ngl kv threads models moe-cache-mib spec-type ;;
+                logs) _values 'flag' -f ;;
+            esac
+            ;;
+    esac
+}
+_bonsai "\$@"
+EOF
+                ;;
+            fish)
+                printf '# fish completion for bonsai. Install with:\n#   bonsai completions fish > ~/.config/fish/completions/bonsai.fish\n'
+                for _c in $_cmds; do
+                    printf 'complete -c bonsai -n "__fish_use_subcommand" -a "%s"\n' "$_c"
+                done
+                printf 'complete -c bonsai -n "__fish_seen_subcommand_from set" -a "port ctx ngl kv threads models moe-cache-mib spec-type"\n'
+                printf 'complete -c bonsai -n "__fish_seen_subcommand_from logs" -a "-f"\n'
+                ;;
+            *)
+                die "Unknown shell '$_shell'. Try: bash, zsh, fish" ;;
+        esac
         ;;
 
     *)

@@ -39,6 +39,15 @@ installed, `--uninstall` removes it. Re-run `install.sh` from a newer checkout t
 update. Release tarballs (`.tar.gz` + checksum) are built automatically on every
 `v*` tag; extract one and run its `install.sh` to install without cloning.
 
+Tab completion is installed alongside the command when your shell's completion
+directory is writable (bash, zsh and fish). To place it by hand:
+
+```bash
+bonsai completions bash > ~/.local/share/bash-completion/completions/bonsai
+bonsai completions zsh  > ~/.zfunc/_bonsai     # then: autoload -U compinit && compinit
+bonsai completions fish > ~/.config/fish/completions/bonsai.fish
+```
+
 
 ---
 
