@@ -41,6 +41,10 @@ while [ $# -gt 0 ]; do
 done
 
 
+# Settings come from .state/service.env unless the environment already set them,
+# so `bonsai set` and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` both work.
+load_settings
+
 if detect_is_stale; then
     "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1
 fi

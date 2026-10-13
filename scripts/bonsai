@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# bonsai - one command to run and manage the local model server.
+#
+#   ./scripts/bonsai start          start it (service if installed, else background)
+#   ./scripts/bonsai stop
+#   ./scripts/bonsai restart        apply settings changes
+#   ./scripts/bonsai status         what is running, on which port, with what loaded
+#   ./scripts/bonsai logs [-f]      follow the log
+#   ./scripts/bonsai show           the current settings
+#   ./scripts/bonsai set ctx 32768  change a setting
+#   ./scripts/bonsai speed          quick tokens/sec check against the running server
+#   ./scripts/bonsai tune           find the fastest settings on this machine
+#   ./scripts/bonsai assess         what fits, and how the KV type changes it
+#   ./scripts/bonsai models         list installed models
+#
+# Settings live in .state/service.env. Editing it, or using `set`, is enough:
+# nothing needs reinstalling.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+UNIT_NAME="ikaros-bonsai.service"
+
+CMD="${1:-help}"
+shift || true
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+have_systemd() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+unit_installed() {
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT_NAME" ]
+}
+
+service_active() {
+    have_systemd && unit_installed &&
+        systemctl --user is-active "$UNIT_NAME" >/dev/null 2>&1
+}
+
+our_pid() {
+    if [ -f "$STATE_DIR/server.pid" ]; then
+        local _p
+        _p="$(cat "$STATE_DIR/server.pid" 2>/dev/null || true)"
+        if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then printf '%s' "$_p"; return 0; fi
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        local _p
+        for _p in $(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true); do
+            local _cmd
+            _cmd="$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null || true)"
+            case "$_cmd" in *"$BIN_DIR"*|*"$REPO_ROOT"*) printf '%s' "$_p"; return 0 ;; esac
+        done
+    fi
+    return 1
+}
+
+server_up() {
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -sf --max-time 3 "http://127.0.0.1:$BONSAI_PORT/health" >/dev/null 2>&1
+}
+
+# Commands that report on the machine need the detection, not just the settings.
+ensure_detect() {
+    if detect_is_stale; then
+        "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1 || true
+    fi
+    load_detect 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+case "$CMD" in
+    start)
+        load_settings
+        if service_active; then
+            info "Already running as $UNIT_NAME."
+            exit 0
+        fi
+        if server_up; then
+            info "Something is already answering on port $BONSAI_PORT."
+            dim "  ./scripts/bonsai status  to see what"
+            exit 0
+        fi
+        if unit_installed && have_systemd; then
+            systemctl --user start "$UNIT_NAME"
+            info "Started $UNIT_NAME."
+            dim "  ./scripts/bonsai logs -f"
+        else
+            "$SCRIPT_DIR/start-server.sh" --no-browser --background
+        fi
+        ;;
+
+    stop)
+        load_settings
+        if service_active; then
+            systemctl --user stop "$UNIT_NAME"
+            info "Stopped $UNIT_NAME."
+        else
+            "$SCRIPT_DIR/stop-server.sh"
+        fi
+        ;;
+
+    restart)
+        load_settings
+        if service_active || (unit_installed && have_systemd); then
+            systemctl --user restart "$UNIT_NAME" 2>/dev/null || {
+                systemctl --user start "$UNIT_NAME"
+            }
+            info "Restarted $UNIT_NAME."
+        else
+            "$SCRIPT_DIR/stop-server.sh" >/dev/null 2>&1 || true
+            "$SCRIPT_DIR/start-server.sh" --no-browser --background
+        fi
+        ;;
+
+    status)
+        load_settings
+        ensure_detect
+        step "Status"
+
+        if service_active; then
+            info "Service : $UNIT_NAME (active)"
+        elif unit_installed; then
+            info "Service : $UNIT_NAME (installed, stopped)"
+        else
+            dim "  Service : not installed (./scripts/install-service.sh to add it)"
+        fi
+
+        if server_up; then
+            if _pid="$(our_pid)"; then
+                info "Server  : answering on http://localhost:$BONSAI_PORT (pid $_pid)"
+            else
+                warn "Server  : port $BONSAI_PORT answers, but it is not this repo's server."
+                dim "            Another instance owns the port; this one is stopped."
+            fi
+        else
+            warn "Server  : nothing answering on port $BONSAI_PORT"
+        fi
+
+        info "KV cache: $(kv_type_effective)"
+        info "Context : $BONSAI_CTX"
+        if [ -n "${GPU_NAME:-}" ]; then
+            info "GPU     : $GPU_NAME (${BACKEND:-unknown})"
+        fi
+
+        if server_up; then
+            _loaded="$(curl -s --max-time 5 "http://127.0.0.1:$BONSAI_PORT/v1/models" 2>/dev/null |
+                python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    for m in d.get("data", []):
+        if m.get("status", {}).get("value") == "loaded":
+            print(m["id"]); break
+except Exception:
+    pass
+' 2>/dev/null || true)"
+            if [ -n "$_loaded" ]; then
+                info "Model   : $_loaded"
+            else
+                dim "  Model   : none loaded (they load on first request)"
+            fi
+        fi
+        ;;
+
+    logs)
+        load_settings
+        FOLLOW=""
+        [ "${1:-}" = "-f" ] && FOLLOW="-f"
+        if service_active; then
+            # shellcheck disable=SC2086
+            journalctl --user -u "$UNIT_NAME" -n 100 $FOLLOW
+        elif [ -f "$STATE_DIR/server.log" ]; then
+            # shellcheck disable=SC2086
+            tail -n 100 $FOLLOW "$STATE_DIR/server.log"
+        else
+            dim "No log yet. Start the server first."
+        fi
+        ;;
+
+    show)
+        load_settings
+        step "Settings"
+        if [ -f "$SETTINGS_FILE" ]; then
+            dim "  from $SETTINGS_FILE"
+            echo ""
+            grep -v '^#' "$SETTINGS_FILE" | grep -v '^$' | sed 's/^/  /'
+        else
+            dim "  No settings file yet; defaults are in use."
+            dim "  ./scripts/install-service.sh  writes one, or use ./scripts/bonsai set"
+        fi
+        echo ""
+        dim "  Effective values:"
+        printf '    %-18s %s\n' "port" "$BONSAI_PORT" "context" "$BONSAI_CTX" \
+            "gpu layers" "$BONSAI_NGL" "kv type" "$(kv_type_effective)" >&2
+        ;;
+
+    set)
+        KEY="${1:-}"
+        VAL="${2:-}"
+        if [ -z "$KEY" ] || [ -z "$VAL" ]; then
+            die "Usage: ./scripts/bonsai set <key> <value>
+       keys: port, ctx, ngl, kv, models"
+        fi
+
+        case "$(printf '%s' "$KEY" | tr '[:upper:]' '[:lower:]')" in
+            port)        VAR="BONSAI_PORT" ;;
+            ctx|context) VAR="BONSAI_CTX" ;;
+            ngl|gpu-layers) VAR="BONSAI_NGL" ;;
+            kv|kv-type)  VAR="BONSAI_KV_TYPE" ;;
+            models|models-dir) VAR="BONSAI_MODELS_DIR" ;;
+            BONSAI_*)    VAR="$KEY" ;;
+            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, models" ;;
+        esac
+
+        case "$VAR" in
+            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL)
+                case "$VAL" in ''|*[!0-9]*) die "$KEY needs a number, got '$VAL'." ;; esac ;;
+            BONSAI_KV_TYPE)
+                kv_type_valid "$VAL" || die "Unknown KV cache type '$VAL'. Allowed: $KV_CACHE_TYPES" ;;
+        esac
+
+        mkdir -p "$STATE_DIR"
+        _tmp="$SETTINGS_FILE.tmp"
+        if [ -f "$SETTINGS_FILE" ]; then
+            grep -v "^$VAR=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
+        else
+            {
+                printf '# Settings for the local Bonsai server.\n'
+                printf '# Edit a value and restart: ./scripts/bonsai restart\n'
+                printf '\n'
+            } > "$_tmp"
+        fi
+        printf '%s=%s\n' "$VAR" "$VAL" >> "$_tmp"
+        mv "$_tmp" "$SETTINGS_FILE"
+
+        info "$VAR=$VAL"
+        if service_active; then
+            dim "  Restart to apply: ./scripts/bonsai restart"
+        fi
+        ;;
+
+    speed)
+        load_settings
+        server_up || die "Nothing answering on port $BONSAI_PORT. Start it first."
+        _model="$(curl -s --max-time 5 "http://127.0.0.1:$BONSAI_PORT/v1/models" 2>/dev/null |
+            python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    ms = d.get("data", [])
+    print(ms[0]["id"] if ms else "")
+except Exception:
+    pass
+' 2>/dev/null || true)"
+        [ -n "$_model" ] || die "The server reported no models."
+        step "Speed check"
+        dim "  One short generation against the running server."
+        _tps="$(curl -s --max-time 300 "http://127.0.0.1:$BONSAI_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":64,"temperature":0.7}' "$_model")" 2>/dev/null |
+            python3 -c '
+import json, sys
+try:
+    print(round(json.load(sys.stdin).get("timings", {}).get("predicted_per_second", 0), 1))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+        if [ -z "$_tps" ] || [ "$_tps" = "0" ]; then
+            die "No measurement came back. Is a model loaded?"
+        fi
+        info "$_tps tok/s on $_model"
+        dim "  ./scripts/bonsai tune  to see whether other settings are faster"
+        ;;
+
+    tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;
+    assess) load_settings; exec "$SCRIPT_DIR/assess.sh" "$@" ;;
+
+    models)
+        load_settings
+        step "Installed models"
+        _n=0
+        while IFS= read -r _m; do
+            _n=$((_n + 1))
+            printf '  %2d. %s  (%s)\n' "$_n" "$(basename "$_m" .gguf)" \
+                "$(human_size "$(model_size_bytes "$_m")")"
+        done < <(find "$MODELS_DIR" -name '*.gguf' -not -name '*mmproj*' \
+            -not -name 'kv-mean-center-*' 2>/dev/null | sort)
+        [ "$_n" -gt 0 ] || dim "  none yet. ./scripts/get-models.sh"
+        ;;
+
+    help|--help|-h|"")
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+
+    *)
+        die "Unknown command '$CMD'. Try: ./scripts/bonsai help"
+        ;;
+esac

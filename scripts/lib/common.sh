@@ -11,6 +11,15 @@ _common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$_common_dir/../.." && pwd)"
 unset _common_dir
 
+# Record which settings the caller supplied before any default is applied below.
+# Without this, load_settings cannot tell a deliberate override from a default,
+# and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
+_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR"
+_BONSAI_FROM_ENV=""
+for _v in $_BONSAI_SETTINGS; do
+    if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
+done
+
 STATE_DIR="${BONSAI_STATE_DIR:-$REPO_ROOT/.state}"
 BIN_DIR="$REPO_ROOT/bin"
 # Exported so the per-script globals stay visible to shellcheck and to any
@@ -72,6 +81,35 @@ kv_type_effective() {
     else
         printf 'K=%s V=%s' "$_k" "$_v"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Settings file
+# ---------------------------------------------------------------------------
+
+# A single editable file holding the settings, shared by the interactive
+# launcher and the systemd unit. `./scripts/bonsai set` writes it, and the unit
+# reads it through EnvironmentFile, so changing a setting never means
+# reinstalling anything.
+SETTINGS_FILE="$STATE_DIR/service.env"
+
+# load_settings - apply the settings file. A value the caller set in the
+# environment wins over the file, so a one-off override still works.
+load_settings() {
+    [ -f "$SETTINGS_FILE" ] || return 0
+    local _line _key _val _skip
+    while IFS= read -r _line; do
+        case "$_line" in ''|'#'*) continue ;; esac
+        _key="${_line%%=*}"
+        _val="${_line#*=}"
+        case "$_key" in BONSAI_*) ;; *) continue ;; esac
+        _skip=0
+        for _v in $_BONSAI_FROM_ENV; do
+            [ "$_v" = "$_key" ] && _skip=1
+        done
+        [ "$_skip" = 1 ] && continue
+        export "$_key=$_val"
+    done < "$SETTINGS_FILE"
 }
 
 # ---------------------------------------------------------------------------

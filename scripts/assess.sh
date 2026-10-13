@@ -15,6 +15,8 @@
 #   ./scripts/assess.sh --measure --speed  also benchmark tokens per second
 #   ./scripts/assess.sh --sweep            split the model across VRAM and RAM,
 #                                          measuring tokens per second at each split
+#   ./scripts/assess.sh --tune             try the settings that affect speed and
+#                                          report the fastest on this machine
 #
 # --sweep answers "how much of this model should go on the GPU?". llama.cpp can
 # keep some layers in VRAM and run the rest from system RAM, so a model larger
@@ -40,6 +42,9 @@ SWEEP=0
 SWEEP_TOKENS=64
 SWEEP_LEVELS=""
 SWEEP_MODEL=""
+TUNE=0
+TUNE_TOKENS=64
+TUNE_MODEL=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -51,7 +56,9 @@ while [ $# -gt 0 ]; do
         --sweep)    SWEEP=1 ;;
         --sweep-tokens) SWEEP_TOKENS="${2:-64}"; shift ;;
         --sweep-levels) SWEEP_LEVELS="${2:-}"; shift ;;
-        --model)    SWEEP_MODEL="${2:-}"; shift ;;
+        --model)    SWEEP_MODEL="${2:-}"; TUNE_MODEL="${2:-}"; shift ;;
+        --tune)     TUNE=1 ;;
+        --tune-tokens) TUNE_TOKENS="${2:-64}"; shift ;;
         -h|--help)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -141,12 +148,13 @@ measure_kv() {
 # Prints nothing and fails if the server cannot start or produce a number.
 bench_tps() {
     _model="$1" _ngl="$2" _ctx="$3" _kv="$4" _tokens="$5"
+    shift 5
     _port="$BENCH_PORT"
     _log="$BENCH_LOG"
 
     "$SERVER_BIN" -m "$_model" --port "$_port" --ctx-size "$_ctx" \
         --cache-type-k "$_kv" --cache-type-v "$_kv" \
-        --n-gpu-layers "$_ngl" --no-warmup --jinja >"$_log" 2>&1 &
+        --n-gpu-layers "$_ngl" --no-warmup --jinja "$@" >"$_log" 2>&1 &
     _pid=$!
 
     _ready=0
@@ -241,6 +249,127 @@ if [ "$DO_MEASURE" = 1 ]; then
         done
     fi
     echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# Tuning: try the settings that move throughput, keep the fastest
+# ---------------------------------------------------------------------------
+
+if [ "$TUNE" = 1 ]; then
+    if [ -n "$TUNE_MODEL" ]; then
+        TUNE_PATH="$TUNE_MODEL"
+        [ -f "$TUNE_PATH" ] || die "No such model: $TUNE_PATH"
+    else
+        TUNE_PATH="${MODELS[0]}"
+        [ "${#MODELS[@]}" -gt 1 ] && dim "  Using $(basename "$TUNE_PATH"); override with --model"
+    fi
+
+    kv_measured "$TUNE_PATH" || die "$(basename "$TUNE_PATH") is not measured.
+       Run first: ./scripts/assess.sh --measure"
+
+    W_GB="$(awk -v b="$(model_size_bytes "$TUNE_PATH")" 'BEGIN { printf "%.2f", b/1073741824 }')"
+
+    step "Tuning for throughput"
+    info "Model  : $(basename "$TUNE_PATH")"
+    info "Context: $CONTEXT"
+    dim "  Each row is a full model load and a $TUNE_TOKENS-token generation."
+    dim "  Numbers move a few percent between runs, so treat small gaps as noise."
+
+    _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
+    [ -n "$_other" ] && warn "Port $BONSAI_PORT is held (pid $_other); it may limit free memory."
+
+    _results="$STATE_DIR/tune-results.tsv"
+    : > "$_results"
+    echo ""
+
+    # label | kv type | extra server args | env to reproduce
+    run_variant() {
+        _label="$1" _kv="$2" _extra="$3" _env="$4"
+
+        # A cache that does not fit is not a candidate, so check before loading.
+        _kvmib="$(kv_mib "$TUNE_PATH" "$CONTEXT" "$_kv" || true)"
+        if [ -n "$_kvmib" ]; then
+            _kvgb="$(awk -v m="$_kvmib" 'BEGIN { printf "%.2f", m/1024 }')"
+            if ! awk -v w="$W_GB" -v k="$_kvgb" -v b="$BUDGET_AVAIL" 'BEGIN { exit !(w + k <= b) }'; then
+                printf '  %-34s %8s  %s\n' "$_label" "skip" "needs $(awk -v w="$W_GB" -v k="$_kvgb" 'BEGIN{printf "%.1f", w+k}')G, budget ${BUDGET_AVAIL}G"
+                return 0
+            fi
+        fi
+
+        BENCH_PORT=$((BONSAI_PORT + 203))
+        BENCH_LOG="$STATE_DIR/assess-tune.log"
+        # shellcheck disable=SC2086
+        _tps="$(bench_tps "$TUNE_PATH" "$BONSAI_NGL" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
+
+        if [ -z "$_tps" ]; then
+            printf '  %-34s %8s  failed\n' "$_label" "-"
+            explain_bench_failure "$BENCH_LOG"
+            return 0
+        fi
+        printf '  %-34s %6s tok/s\n' "$_label" "$_tps"
+        printf '%s\t%s\t%s\t%s\n' "$_tps" "$_label" "$_kv" "$_env" >> "$_results"
+    }
+
+    printf '  %-34s %12s\n' "configuration" "result"
+    printf '  %s\n' "----------------------------------------------"
+
+    # The default first, so every other row has something to be compared to.
+    run_variant "q8_0 KV, ubatch 512 (default)" "q8_0" "--ubatch-size 512" \
+        "BONSAI_KV_TYPE=q8_0"
+    run_variant "q4_0 KV, ubatch 512" "q4_0" "--ubatch-size 512" \
+        "BONSAI_KV_TYPE=q4_0"
+    run_variant "f16 KV, ubatch 512" "f16" "--ubatch-size 512" \
+        "BONSAI_KV_TYPE=f16"
+    run_variant "q8_0 KV, ubatch 256" "q8_0" "--ubatch-size 256" \
+        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 256\""
+    run_variant "q8_0 KV, ubatch 1024" "q8_0" "--ubatch-size 1024" \
+        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 1024\""
+
+    echo ""
+    if [ ! -s "$_results" ]; then
+        warn "Nothing measured. Check .state/assess-tune.log"
+        echo ""
+        exit 0
+    fi
+
+    _base="$(awk -F'\t' '$2 ~ /default/ { print $1; exit }' "$_results")"
+    _best="$(sort -rn "$_results" | head -1)"
+
+    _btps="$(printf '%s' "$_best" | cut -f1)"
+    _blabel="$(printf '%s' "$_best" | cut -f2)"
+    _benv="$(printf '%s' "$_best" | cut -f4)"
+
+    printf '  %-40s %10s %10s\n' "ranked" "tok/s" "vs default"
+    printf '  %s\n' "------------------------------------------------------------"
+    sort -rn "$_results" | while IFS=$'\t' read -r _t _l _k _e; do
+        _rel=""
+        if [ -n "$_base" ]; then
+            _rel="$(awk -v a="$_t" -v b="$_base" 'BEGIN { printf "%.2fx", (b > 0 ? a/b : 1) }')"
+        fi
+        printf '  %-40s %10s %10s\n' "$_l" "$_t" "$_rel"
+    done
+
+    echo ""
+    if [ "$_blabel" = "q8_0 KV, ubatch 512 (default)" ]; then
+        info "The defaults are already the fastest of these on this machine."
+    else
+        info "Fastest: $_blabel at ${_btps} tok/s."
+    fi
+
+    # Only call it a win if it clears the run-to-run noise we see in practice.
+    if [ -n "$_base" ] && [ "$_blabel" != "q8_0 KV, ubatch 512 (default)" ]; then
+        if awk -v a="$_btps" -v b="$_base" 'BEGIN { exit !(a > b * 1.03) }'; then
+            awk -v a="$_btps" -v b="$_base" \
+                'BEGIN { printf "  That is %.0f%% faster than the default.\n", (a/b - 1) * 100 }' >&2
+            echo ""
+            info "Serve it with:"
+            dim "    $_benv ./scripts/start-server.sh"
+        else
+            dim "  The gap is within run-to-run noise, so the defaults are fine."
+        fi
+    fi
+    echo ""
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------

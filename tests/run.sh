@@ -436,6 +436,44 @@ assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
 
 rm -rf "$_tmpdir"
 
+group "settings file"
+
+# Regression: install-service.sh used to rewrite the settings file from
+# defaults, silently discarding anything set with `bonsai set`.
+_tmpdir="$(mktemp -d)"
+_old_state="$STATE_DIR"
+STATE_DIR="$_tmpdir"
+SETTINGS_FILE="$_tmpdir/service.env"
+_BONSAI_FROM_ENV=""
+
+printf 'BONSAI_PORT=8091\nBONSAI_CTX=8192\n' > "$SETTINGS_FILE"
+load_settings
+assert_eq "the settings file is applied" "8091" "$BONSAI_PORT"
+assert_eq "and for every key it holds" "8192" "$BONSAI_CTX"
+
+# A value already exported wins over the file.
+(
+    BONSAI_PORT=9999
+    # shellcheck disable=SC2034  # read by load_settings below
+    _BONSAI_FROM_ENV=" BONSAI_PORT"
+    load_settings
+    assert_eq "an exported value beats the file" "9999" "$BONSAI_PORT"
+)
+
+# A malformed or comment-only file must not break anything.
+printf '# only a comment\n' > "$SETTINGS_FILE"
+load_settings
+pass "a comment-only settings file is harmless"
+
+# Unknown keys are ignored rather than exported.
+printf 'PATH=/evil\nBONSAI_CTX=4096\n' > "$SETTINGS_FILE"
+load_settings
+assert_eq "only BONSAI_ keys are applied" "4096" "$BONSAI_CTX"
+
+STATE_DIR="$_old_state"
+SETTINGS_FILE="$STATE_DIR/service.env"
+rm -rf "$_tmpdir"
+
 group "script syntax"
 
 _syntax_fail=""
@@ -460,6 +498,23 @@ for f in detect fetch-binary get-models start-server stop-server hermes-wire \
         fail "$f.sh --help"
     fi
 done
+
+# bonsai is the user-facing entry point and has no .sh suffix.
+if "$SCRIPTS/bonsai" help >/dev/null 2>&1; then
+    pass "bonsai help"
+else
+    fail "bonsai help"
+fi
+if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai set"; then
+    pass "bonsai help documents the settings command"
+else
+    fail "bonsai help should document 'bonsai set'"
+fi
+if "$SCRIPTS/bonsai" nonsense >/dev/null 2>&1; then
+    fail "bonsai should reject an unknown command"
+else
+    pass "bonsai rejects an unknown command"
+fi
 
 # ---------------------------------------------------------------------------
 # Optional checks

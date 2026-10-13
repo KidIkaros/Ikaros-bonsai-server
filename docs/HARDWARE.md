@@ -258,6 +258,27 @@ offload buys less than it looks like it should. Note that the cache follows the 
 `-ngl 0` puts it in RAM (llama.cpp logs a CPU KV buffer), and offloading any layer moves
 it to VRAM. That is why the all-CPU row needs 4.4 GB of RAM for a 2.0 GB model.
 
+### What actually moves throughput
+
+Measured on the 8B at 16384 context. The ordering matters more than the exact figures:
+
+| Change | Effect |
+|---|---|
+| Full GPU offload | up to **4.2x** (see the sweep below) |
+| `f16` KV instead of `q8_0` | ~5% faster, 1.88x more cache |
+| `q4_0` KV instead of `q8_0` | no measurable speed change |
+| `--ubatch-size 256` | ~3% faster on this card |
+| more or fewer threads | no measurable change under full offload |
+| `--flash-attn off` | fails: a quantized V cache requires flash attention |
+
+Run-to-run variance on this hardware is around 2-3%, so anything smaller than that is
+noise. `./scripts/bonsai tune` measures the same set on your machine and will not call a
+gap inside the noise a win.
+
+The thread result is worth stating plainly because the usual advice is to tune it: with
+every layer on the GPU, generation is bound by the GPU, and moving threads between 8 and
+16 changed nothing measurable (87.1 against 86.9 tok/s).
+
 ### Trading context for memory
 
 Lowering the context shrinks the cache linearly, and stacks with the type:

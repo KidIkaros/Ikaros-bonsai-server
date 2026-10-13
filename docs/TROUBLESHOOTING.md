@@ -1,10 +1,19 @@
 # Troubleshooting
 
-Start with the two self-checking commands:
+Start with the one command that reports on everything:
 
 ```bash
-./scripts/detect.sh            # what it thinks the hardware is
-./scripts/stop-server.sh --status
+./scripts/bonsai status        # running? which port? what is loaded? which backend?
+```
+
+It distinguishes "this repo's server is running" from "something else owns the port",
+which is the usual source of confusion. `./scripts/bonsai logs -f` follows the log.
+
+For a lower-level look:
+
+```bash
+./scripts/detect.sh --json     # what it thinks the hardware is
+./scripts/bonsai show          # the effective settings
 ```
 
 `detect.sh` writes everything to `.state/detect.env`, which every other script reads.
@@ -223,10 +232,23 @@ Correct behaviour. The installer deliberately does not enable or start it. A mod
 server holds VRAM for as long as it runs, so starting it is your decision:
 
 ```bash
-systemctl --user start ikaros-bonsai
-systemctl --user status ikaros-bonsai
-journalctl --user -u ikaros-bonsai -n 50
+./scripts/bonsai start
+./scripts/bonsai status
+./scripts/bonsai logs
 ```
+
+### A setting did not take effect
+
+Settings live in `.state/service.env`. Check what is actually in effect:
+
+```bash
+./scripts/bonsai show
+```
+
+A value exported in your shell wins over the file, so
+`BONSAI_CTX=8192 ./scripts/bonsai status` reports 8192 even if the file says otherwise.
+If you changed the file, the running server still has the old value until you restart:
+`./scripts/bonsai restart`.
 
 ### It will not start at boot
 

@@ -226,21 +226,91 @@ BONSAI_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" \
 See [docs/HARDWARE.md](docs/HARDWARE.md#the-4x-path-with-quality-recovered---kv-mean-center)
 for the measured numbers.
 
-## Running it as a service (optional)
+## Running it
+
+Everything goes through one command. You do not need to know systemd:
+
+```bash
+./scripts/bonsai start      # start it
+./scripts/bonsai status     # is it up, on which port, what is loaded
+./scripts/bonsai stop
+./scripts/bonsai logs -f
+./scripts/bonsai speed      # quick tokens/sec check
+./scripts/bonsai tune       # find the fastest settings on this machine
+./scripts/bonsai assess     # what fits
+./scripts/bonsai models     # what is installed
+./scripts/bonsai help
+```
+
+### Settings, without reinstalling
+
+`./scripts/bonsai set` writes a plain settings file, `.state/service.env`:
+
+```bash
+./scripts/bonsai set ctx 32768
+./scripts/bonsai set kv iq4_nl
+./scripts/bonsai set ngl 24
+./scripts/bonsai restart      # apply
+```
+
+The file is readable and editable by hand, and it is the single source of settings for
+both the launcher and the service. Changing a value never means reinstalling anything. A
+value exported in your shell still wins, so a one-off
+`BONSAI_CTX=8192 ./scripts/start-server.sh` works too.
+
+### As a service (optional)
 
 ```bash
 ./scripts/install-service.sh
 ```
 
 This writes a systemd **user** unit and stops there. It does **not** enable it and does
-**not** start it. A model server holds VRAM and CPU the whole time it runs, so starting
-it is always your decision:
+**not** start it — a model server holds VRAM and CPU the whole time it runs, so starting
+it is always your decision. Once installed, `./scripts/bonsai start` uses the service
+automatically; without it, `bonsai` starts the server in the background instead.
 
 ```bash
-systemctl --user start ikaros-bonsai     # when you want it
-systemctl --user stop  ikaros-bonsai
 systemctl --user enable ikaros-bonsai    # only if you want it at login
 ```
+
+## Getting the most tokens per second
+
+Measured on the 8B at 16384 context, and the same shape applies elsewhere:
+
+| Change | Effect | Why |
+|---|---|---|
+| **Full GPU offload** (`-ngl` = all layers) | **up to 4.2x** | the single biggest lever; see the sweep below |
+| `f16` KV instead of `q8_0` | ~5% faster | no dequantization in attention, but 1.88x more cache |
+| `q4_0` KV instead of `q8_0` | no measurable change | 3.56x less memory for free, but costs quality |
+| `--ubatch-size 256` instead of 512 | ~3% faster on this card | smaller physical batches |
+| More or fewer threads | **no measurable change** | under full offload the CPU is not the bottleneck |
+| `--flash-attn off` | **fails** | a quantized V cache requires flash attention |
+
+The ordering matters more than the exact numbers: offload first, then decide the KV type
+by how much memory you have, and ignore thread tuning.
+
+`--tune` measures these on **your** machine rather than trusting the table above, and
+refuses to call a difference smaller than run-to-run noise a win:
+
+```bash
+./scripts/bonsai tune
+```
+
+```
+  ranked                                        tok/s vs default
+  f16 KV, ubatch 512                             93.5      1.05x
+  q8_0 KV, ubatch 512 (default)                  89.2      1.00x
+  q8_0 KV, ubatch 256                            89.1      1.00x
+  q8_0 KV, ubatch 1024                           83.8      0.94x
+  q4_0 KV, ubatch 512                            83.0      0.93x
+
+Fastest: f16 KV, ubatch 512 at 93.5 tok/s.
+  Serve it with:
+    BONSAI_KV_TYPE=f16 ./scripts/start-server.sh
+```
+
+That is the trade in one line: `f16` KV buys about 5% and costs 1.88x the cache. If the
+cache does not fit, take `q8_0` and lose almost nothing, or `q4_0` and lose only quality.
 
 ## The speed-log UI patch (optional, source build)
 
