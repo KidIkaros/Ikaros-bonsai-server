@@ -66,16 +66,21 @@ while [ $# -gt 0 ]; do
 done
 
 case "$CONTEXT" in ''|*[!0-9]*) die "--context needs a number, got '$CONTEXT'." ;; esac
-kv_type_valid "$KV_TYPE" || die "Unknown KV cache type '$KV_TYPE'. Allowed: $KV_CACHE_TYPES"
 
 if detect_is_stale; then
     "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1
 fi
 load_detect
 
-# "auto" needs the measurements and the budget, so resolve it before anything
-# validates the value.
+# Resolving "auto" needs the measurements and the budget, so it has to happen
+# after detection and before anything validates the value. KV_TYPE was captured
+# from the setting earlier, so re-read it now that it may have changed.
 kv_type_resolve
+# Report the type that will actually be used. An earlier version mapped f16 to
+# q8_0 here, which was written when f16 meant "quantization disabled"; now that
+# auto can pick f16, that mapping would report a type the server will not use.
+KV_TYPE="$(kv_type_effective)"
+kv_type_valid "$KV_TYPE" || die "Unknown KV cache type '$KV_TYPE'. Allowed: $KV_CACHE_TYPES"
 
 SERVER_BIN="$(llama_server_bin)" || die "No llama-server installed. Run: ./scripts/fetch-binary.sh"
 
