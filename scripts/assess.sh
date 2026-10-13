@@ -171,7 +171,7 @@ bench_tps() {
 
     _ready=0
     for _ in $(seq 1 120); do
-        curl -sf "http://127.0.0.1:$_port/health" >/dev/null 2>&1 && { _ready=1; break; }
+        curl -sf --max-time 5 "http://127.0.0.1:$_port/health" >/dev/null 2>&1 && { _ready=1; break; }
         kill -0 "$_pid" 2>/dev/null || break
         sleep 1
     done
@@ -475,7 +475,7 @@ if [ "$TUNE" = 1 ]; then
         *mtp*)
             run_variant "draft-mtp n-max 1" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 1" \
-                "BONSAI_SPEC_TYPE=draft-mtp$_ENV_SUFFIX" "$_TUNE_NGL"
+                "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=1$_ENV_SUFFIX" "$_TUNE_NGL"
             run_variant "draft-mtp n-max 2" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 2" \
                 "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=2$_ENV_SUFFIX" "$_TUNE_NGL"
@@ -495,6 +495,14 @@ if [ "$TUNE" = 1 ]; then
     _btps="$(printf '%s' "$_best" | cut -f1)"
     _blabel="$(printf '%s' "$_best" | cut -f2)"
     _benv="$(printf '%s' "$_best" | cut -f4)"
+
+    # Persist the measured winner so `bonsai apply` can project it onto the
+    # settings file. apply_tune_best keeps the machine-level knobs (NGL,
+    # ubatch) and drops only the backend-specific spec on a cross-backend apply.
+    if [ -n "$_benv" ]; then
+        write_tune_best "$_benv" "$BACKEND"
+        dim "  Winner recorded to $TUNE_BEST_FILE (run ./scripts/bonsai apply to persist it)."
+    fi
 
     printf '  %-38s %8s %9s  %s\n' "fastest first" "tok/s" "vs now" "verdict"
     printf '  %s\n' "----------------------------------------------------------------------"

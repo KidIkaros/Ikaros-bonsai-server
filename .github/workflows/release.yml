@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # The tarball is just the tracked tree (git archive): scripts, docs, tests.
+  # No binaries, no models, no state - install.sh fetches what the machine
+  # needs at install time, the same way setup.sh always has.
+  package:
+    name: build release tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: ver
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build tarball
+        run: |
+          git archive --format=tar.gz \
+            --prefix="ikaros-bonsai-${GITHUB_REF#refs/tags/}/" \
+            -o "ikaros-bonsai-${GITHUB_REF#refs/tags/}.tar.gz" HEAD
+          sha256sum "ikaros-bonsai-${GITHUB_REF#refs/tags/}.tar.gz" \
+            > "ikaros-bonsai-${GITHUB_REF#refs/tags/}.tar.gz.sha256"
+          ls -lh *.tar.gz
+
+      - name: Verify the tarball installs on a clean prefix
+        run: |
+          # Prove the shipped artifact actually works before publishing it:
+          # extract to a temp dir, run install.sh into a scratch prefix, and
+          # check `bonsai status` answers from an unrelated directory.
+          set -euo pipefail
+          TARBALL="ikaros-bonsai-${GITHUB_REF#refs/tags/}.tar.gz"
+          tmp="$(mktemp -d)"
+          tar -xzf "$TARBALL" -C "$tmp"
+          src="$tmp/ikaros-bonsai-${GITHUB_REF#refs/tags/}"
+          BONSAI_PREFIX="$tmp/prefix" "$src/install.sh"
+          # Run from / so the repo checkout is out of scope entirely.
+          ( cd / && "$tmp/prefix/bin/bonsai" status )
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ikaros-bonsai-${{ steps.ver.outputs.tag }}.tar.gz
+            ikaros-bonsai-${{ steps.ver.outputs.tag }}.tar.gz.sha256
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            curl -fsSL -o bonsai.tar.gz \
+              https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/ikaros-bonsai-${{ steps.ver.outputs.tag }}.tar.gz
+            tar -xzf bonsai.tar.gz
+            cd ikaros-bonsai-${{ steps.ver.outputs.tag }}
+            ./install.sh            # puts `bonsai` on PATH (~/.local/bin)
+            ```
+
+            Then, from any directory:
+
+            ```bash
+            bonsai detect            # what hardware was found, which backend
+            bonsai start             # downloads the binary + a model on first run
+            bonsai status
+            ```
+
+            No root needed. `BACKEND=rocm|vulkan|cuda|cpu` forces a backend;
+            see `docs/HARDWARE.md` for what fits what.

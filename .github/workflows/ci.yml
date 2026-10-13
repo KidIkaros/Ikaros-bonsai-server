@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Run shellcheck
-        run: shellcheck --version && shellcheck -x scripts/*.sh scripts/lib/*.sh tests/run.sh setup.sh
+        run: shellcheck --version && shellcheck -x scripts/*.sh scripts/lib/*.sh tests/run.sh setup.sh install.sh
 
   test:
     name: tests

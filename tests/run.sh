@@ -681,6 +681,19 @@ else
 fi
 rm -rf "$_td"
 
+# Regression: write_tune_best runs under `set -u` (assess.sh and bonsai set it),
+# but a winner that omits some keys must not trip "unbound variable" on the
+# indirect expansion of unset keys like BONSAI_KV_TYPE_K.
+_td3="$(mktemp -d)"
+BONSAI_STATE_DIR="$_td3" bash -c '. scripts/lib/common.sh; set -u; write_tune_best "BONSAI_KV_TYPE=q8_0 BONSAI_NGL=28" rocm' >/dev/null 2>&1
+if grep -qx 'BONSAI_NGL=28' "$_td3/tune-best.env" && grep -qx 'BONSAI_KV_TYPE=q8_0' "$_td3/tune-best.env"; then
+    pass "write_tune_best is safe under set -u with a partial winner"
+else
+    fail "write_tune_best crashed or truncated under set -u"
+    [ -f "$_td3/tune-best.env" ] && sed -n '1,20p' "$_td3/tune-best.env" >&2
+fi
+rm -rf "$_td3"
+
 group "bonsai set"
 
 _td="$(mktemp -d)"
@@ -817,6 +830,42 @@ if [ "$WITH_NETWORK" = 1 ]; then
     else
         fail "could not read the HF SHA256/size" "got '$_h'"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+
+group "installable executable"
+
+# The release artifact is only useful if `bonsai` works from a directory that
+# is not the repo, which is the whole point of installing it. Install into a
+# scratch prefix and run `status` from / so the checkout is out of scope.
+if [ -x "$SCRIPTS/../install.sh" ]; then
+    _inst_tmp="$(mktemp -d)"
+    if BONSAI_PREFIX="$_inst_tmp/prefix" "$SCRIPTS/../install.sh" >/dev/null 2>&1; then
+        pass "install.sh installs into a custom prefix"
+    else
+        fail "install.sh failed on a scratch prefix"
+    fi
+    if [ -x "$_inst_tmp/prefix/bin/bonsai" ]; then
+        pass "install.sh creates an executable bonsai command"
+    else
+        fail "no executable at <prefix>/bin/bonsai"
+    fi
+    if ( cd / && "$_inst_tmp/prefix/bin/bonsai" status ) >/dev/null 2>&1; then
+        pass "installed bonsai runs from an unrelated directory"
+    else
+        fail "installed bonsai does not run outside the repo"
+    fi
+    # Uninstall must actually remove the command, or --uninstall lies.
+    if BONSAI_PREFIX="$_inst_tmp/prefix" "$SCRIPTS/../install.sh" --uninstall >/dev/null 2>&1 &&
+       [ ! -e "$_inst_tmp/prefix/bin/bonsai" ]; then
+        pass "install.sh --uninstall removes the command"
+    else
+        fail "--uninstall left the command in place"
+    fi
+    rm -rf "$_inst_tmp"
+else
+    fail "install.sh is missing or not executable"
 fi
 
 # ---------------------------------------------------------------------------

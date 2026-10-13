@@ -10,6 +10,7 @@
 #   ./scripts/bonsai set ctx 32768  change a setting
 #   ./scripts/bonsai speed          quick tokens/sec check against the running server
 #   ./scripts/bonsai tune           find the fastest settings on this machine
+#   ./scripts/bonsai apply          persist the last tune's winner to settings
 #   ./scripts/bonsai assess         what fits, and how the KV type changes it
 #   ./scripts/bonsai coverage       which settings have been tried, and which have not
 #   ./scripts/bonsai models         list installed models
@@ -289,6 +290,7 @@ except Exception:
         ;;
 
     tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;
+    apply)  load_settings; ensure_detect; apply_tune_best ;;
     assess) load_settings; exec "$SCRIPT_DIR/assess.sh" "$@" ;;
     coverage) load_settings; exec "$SCRIPT_DIR/assess.sh" --coverage ;;
 

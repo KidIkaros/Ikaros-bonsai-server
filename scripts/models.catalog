@@ -72,5 +72,25 @@ sudopingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp-l
 sudopingx/Ternary-Bonsai-2-27B-PTQ1_0-MTP-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp.gguf|7.01|11|15|community,27b,mtp
 CaryPalmer/Ternary-Bonsai-2-27B-262k-GGUF|Ternary-Bonsai-2-27B-PTQ1_0-mtp-procreations.gguf|6.40|10|14|community,27b,long-context,mtp
 
+# ---------------------------------------------------------------------------
+# 2026 current generation - verified via HF API 2026-10-13 (see HF-LANDSCAPE.md)
+# ---------------------------------------------------------------------------
+
+# Underdog Saluki: 2-bit IQ2-mix, beats FULL-SIZE Qwen3.8-27B on BFCL tool
+# calling (88 vs 84) and Bonsai 2 (70). Quality gem, not a speed pick (~28
+# tok/s single-stream on RX 9060 XT vs PTQ1_0-lean's 35). Stock llama.cpp.
+ConwayResearch/Underdog-Saluki-27B-1.0|Underdog-Saluki-27B-1.0-IQ2-mix.gguf|7.90|10|14|community,27b,2bit,quality-gem,tool-calling,gem
+Kujira/Underdog-Saluki-27B-1.0-MTP-GGUF|Underdog-Saluki-27B-1.0-IQ2-mix-MTP.gguf|8.35|10|14|community,27b,2bit,quality-gem,tool-calling,mtp,gem
+ConwayResearch/Underdog-Saluki-27B-1.0|mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf|0.63|0|0|community,27b,vision-projector
+
+# MiniCPM-V-4.7-35B-A3B: MoE (35B total / ~3B active). Decode reads only active
+# experts so the ceiling scales with ACTIVE params - the architecture-level
+# path to >100 tok/s on this card (theoretical ~150). mix_q3gud_im is the
+# quant that fits 16 GB; larger Q4 files need CPU offload. Needs measuring.
+openbmb/MiniCPM-V-4.7-35B-A3B-gguf|MiniCPM-V-4_7-35B-A3B-mix_q3gud_im.gguf|15.4|15|17|community,35b,moe,multimodal,speed-path,gem
+openbmb/MiniCPM-V-4.7-35B-A3B-gguf|dspark-MiniCPM-V-4_7-35B-A3B-F16.gguf|0.75|0|0|community,35b,dspark-drafter,speculative-decoding
+openbmb/MiniCPM-V-4.7-35B-A3B-gguf|mmproj-model-f16-4x.gguf|0.87|0|0|community,35b,vision-projector
+openbmb/MiniCPM-V-4.7-1B-gguf|MiniCPM-V-4_7-1B-Q4_0.gguf|1.2|4|8|community,1b,multimodal,on-device
+
 ukisai/Swift-Bonsai-2-GGUF|Swift-Bonsai-2-PTQ1_0.gguf|5.95|9|13|community,27b
 ukisai/Swift-Bonsai-2-GGUF|Swift-Bonsai-2-PQ2_0.gguf|7.21|11|15|community,27b

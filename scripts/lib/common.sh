@@ -14,7 +14,7 @@ unset _common_dir
 # Record which settings the caller supplied before any default is applied below.
 # Without this, load_settings cannot tell a deliberate override from a default,
 # and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
-_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_THREADS BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX"
+_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_THREADS BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_SPEC_DRAFT_P_MIN"
 _BONSAI_FROM_ENV=""
 for _v in $_BONSAI_SETTINGS; do
     if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
@@ -35,12 +35,22 @@ PRISM_COMMIT_FULL="${PRISM_COMMIT_FULL:-e8fd209c975c80aa7fb36a8423571ff3b1b7e955
 PRISM_REPO="${PRISM_REPO:-PrismML-Eng/llama.cpp}"
 
 # Speculative decoding. "--spec-type draft-mtp" uses the MTP head inside an
-# *-mtp.gguf file, so no separate drafter is needed. Measured on an RX 9060 XT
-# with the 27B lean MTP file: n-max 1 gives +6 to +13%, and n-max 2 is WORSE
-# than baseline (acceptance falls, and the stock small-batch mat-vec makes the
-# wider window cost more than it saves). See docs/HARDWARE.md.
+# *-mtp.gguf file, so no separate drafter is needed.
+#
+# Measured on an RX 9060 XT with the 27B lean MTP file: the optimal window is
+# BACKEND-dependent - Vulkan: n-max 2 (54.9 tok/s), ROCm: n-max 1 (51.2), both
+# well above the ~35 tok/s baseline. Below 1.0 the floor is disabled.
+#
+# BONSAI_SPEC_DRAFT_P_MIN is the draft probability floor (llama.cpp default
+# 0.0 = disabled). Upstream measured +15% at n-max 16 / p-min 0.8 on a 5090
+# with Gemma4-31B (GH #25198), so the wiring exists for hardware where it
+# helps. MEASURED ON THIS CARD (RX 9060 XT, Oct 2026): it does NOT help -
+# lean n-max 4/8/16 with p-min 0.8 scored 38.5 / 37.1 / 32.7 vs 47.7 for
+# plain n-max 2. Deeper speculation hurts here and the floor does not rescue
+# it. Left at 0.0 by default; see docs/RESEARCH-2026-10.md section 2.
 BONSAI_SPEC_TYPE="${BONSAI_SPEC_TYPE:-}"
 BONSAI_SPEC_DRAFT_N_MAX="${BONSAI_SPEC_DRAFT_N_MAX:-1}"
+BONSAI_SPEC_DRAFT_P_MIN="${BONSAI_SPEC_DRAFT_P_MIN:-0.0}"
 
 # Optional draft model for speculative decoding. Must share the target's
 # vocabulary; the PrismML repos ship purpose-trained drafters named *-dspark-*.
@@ -184,12 +194,17 @@ write_tune_best() {
         # quoted values like BONSAI_EXTRA_ARGS="--ubatch-size 256" come through.
         ( unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
                 BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
+                BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
             eval "$_env" 2>/dev/null || true
+            # BONSAI_CTX is machine- and model-specific: the tune measured the
+            # winner AT this context, so applying it at another silently
+            # changes what was measured. CONTEXT is what the tune actually ran
+            # at (it can differ from the ambient BONSAI_CTX via --context).
+            [ -n "${CONTEXT:-}" ] && BONSAI_CTX="$CONTEXT"
             for _k in BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
                       BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                      BONSAI_EXTRA_ARGS BONSAI_THREADS; do
-                [ -n "${!_k}" ] && printf '%s=%s\n' "$_k" "${!_k}"
+                      BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS; do
+                [ -n "${!_k:-}" ] && printf '%s=%s\n' "$_k" "${!_k:-}"
             done
             : # ensure the subshell returns success even if the last key was unset
         )
@@ -211,7 +226,7 @@ apply_tune_best() {
     # not measure threads must not drag the default into the settings file.
     unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
           BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-          BONSAI_EXTRA_ARGS BONSAI_THREADS
+          BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS
     # shellcheck source=/dev/null
     . "$TUNE_BEST_FILE"
     local _tuned_backend="${BONSAI_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
@@ -226,6 +241,10 @@ apply_tune_best() {
     [ -n "${BONSAI_THREADS:-}" ]     && { settings_set BONSAI_THREADS "$BONSAI_THREADS"; _applied=1; }
     [ -n "${BONSAI_EXTRA_ARGS:-}" ]  && { settings_set BONSAI_EXTRA_ARGS "$BONSAI_EXTRA_ARGS"; _applied=1; }
     [ -n "${BONSAI_NGL:-}" ]         && { settings_set BONSAI_NGL "$BONSAI_NGL"; _applied=1; }
+    # Context: the tune measured the winner AT this context, so it belongs to
+    # the winner. Without this the apply silently reverted to the 65536 default
+    # and a model tuned at 8192 OOM'd on its next start.
+    [ -n "${BONSAI_CTX:-}" ]         && { settings_set BONSAI_CTX "$BONSAI_CTX"; _applied=1; }
     # Speculative settings: backend-specific. Only apply when the backend
     # matches the one the winner was measured under; otherwise drop any stale
     # value so a config tuned for Vulkan, say, does not end up running on ROCm
@@ -537,8 +556,10 @@ free_vram_gb() {
 }
 
 # model_size_bytes MODEL - file size, or 0.
+# Uses -L so a symlinked model (the LM Studio / Hugging Face layouts both
+# symlink GGUFs into place) reports the target's size, not the link's.
 model_size_bytes() {
-    stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || echo 0
+    stat -L -c '%s' "$1" 2>/dev/null || stat -L -f '%z' "$1" 2>/dev/null || echo 0
 }
 
 # kv_type_auto - pick the fastest KV type that still fits the machine.

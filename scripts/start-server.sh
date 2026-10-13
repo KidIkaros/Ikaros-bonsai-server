@@ -19,7 +19,10 @@
 #   BONSAI_DRAFT_MODEL=path a *-dspark-* drafter, for speculative decoding
 #   BONSAI_SPEC_TYPE=name   speculative decoding type; draft-mtp uses the MTP
 #                           head inside a *-mtp.gguf, no second file needed
-#   BONSAI_SPEC_DRAFT_N_MAX tokens to draft (default 1; 2 is slower here)
+#   BONSAI_SPEC_DRAFT_N_MAX tokens to draft (default 1; Vulkan prefers 2,
+#                           ROCm prefers 1 on this card - measure both)
+#   BONSAI_SPEC_DRAFT_P_MIN draft probability floor (default 0.0 = disabled;
+#                           0.8 lets deeper n-max pay off, see RESEARCH-2026-10)
 #   BONSAI_MODELS_DIR=path  models directory
 #   BONSAI_EXTRA_ARGS="..." extra llama-server flags
 
@@ -77,6 +80,38 @@ if command -v lsof >/dev/null 2>&1; then
         echo "       another port:" >&2
         echo "         BONSAI_PORT=9000 ./scripts/start-server.sh" >&2
         exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-flight: refuse to start in states that are known to wedge.
+# ---------------------------------------------------------------------------
+
+# Disk guard. A wedged loader writes its spinner to the log without bound -
+# one stuck load has been observed writing 1.7 GB. Refusing to start on a
+# nearly-full disk keeps that from becoming unrecoverable.
+_df_line="$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4, $6}')"
+_df_kb="${_df_line%% *}"
+if [ -n "$_df_kb" ] && [ "$_df_kb" -lt 5242880 ] 2>/dev/null; then
+    die "Less than 5 GB free on ${_df_line#* } ($((_df_kb / 1024)) MB available).
+       A stuck model load writes its progress spinner to the log without
+       bound, so starting here risks filling the disk. Free space, then retry."
+fi
+
+# Stale GPU state. If VRAM is held but no llama-server is running, a previous
+# load died mid-transfer (crash, SIGKILL) and the runtime never released it.
+# The next load then hangs during compute-graph setup, which looks like a
+# silent startup. Detect it here and say how to recover, instead of letting
+# the server appear to start and never answer a request.
+if [ "$BACKEND" != "cpu" ] && [ -n "${VRAM_GB:-}" ]; then
+    _free_vram="$(free_vram_gb 2>/dev/null || true)"
+    if [ -n "$_free_vram" ]; then
+        _used_vram="$(awk -v t="$VRAM_GB" -v f="$_free_vram" 'BEGIN { u = t - f; printf "%d", (u > 0 ? u : 0) }')"
+        if [ "$_used_vram" -gt 2 ] && [ -z "$(pgrep -f '[l]lama-server' 2>/dev/null || true)" ]; then
+            warn "VRAM appears held by a dead process (${_used_vram} GB in use, no llama-server running)."
+            warn "A previous load was killed mid-transfer; the next load will hang."
+            warn "Recover with: pkill -9 llama-server, then retry. Reboot if it persists."
+        fi
     fi
 fi
 
@@ -143,6 +178,12 @@ if [ -n "${BONSAI_SPEC_TYPE:-}" ]; then
     if [ "$BONSAI_SPEC_TYPE" != "none" ]; then
         DRAFT_ARGS+=(--spec-type "$BONSAI_SPEC_TYPE"
                      --spec-draft-n-max "$BONSAI_SPEC_DRAFT_N_MAX")
+        # The probability floor is only passed when enabled: passing 0.0
+        # explicitly is the llama.cpp default, but keeping it off the command
+        # line means older builds without the flag still work.
+        if [ "${BONSAI_SPEC_DRAFT_P_MIN:-0.0}" != "0.0" ] && [ -n "${BONSAI_SPEC_DRAFT_P_MIN:-}" ]; then
+            DRAFT_ARGS+=(--spec-draft-p-min "$BONSAI_SPEC_DRAFT_P_MIN")
+        fi
     fi
 fi
 
@@ -223,13 +264,88 @@ fi
 if [ "$BACKGROUND" = 1 ]; then
     mkdir -p "$STATE_DIR"
     LOG="$STATE_DIR/server.log"
-    nohup "${CMD[@]}" >"$LOG" 2>&1 &
+    # Fresh log per start so the failure tail below is about this attempt.
+    : >"$LOG"
+    nohup "${CMD[@]}" >>"$LOG" 2>&1 &
     _pid=$!
     printf '%s' "$_pid" > "$STATE_DIR/server.pid"
-    info "Started in background (pid $_pid)"
-    dim "  log: $LOG"
-    dim "  stop: ./scripts/stop-server.sh"
-    exit 0
+
+    # Verify the server actually became healthy before claiming success. A
+    # model load can hang indefinitely on a wedged GPU runtime; without this
+    # check the caller is told "started" and every request then times out
+    # with no explanation. Bounded wait, then a clear failure.
+    _health_timeout="${BONSAI_START_TIMEOUT:-120}"
+    info "Waiting up to ${_health_timeout}s for the server to become healthy..."
+    _ok=0
+    _i=0
+    while [ "$_i" -lt "$_health_timeout" ]; do
+        if ! kill -0 "$_pid" 2>/dev/null; then
+            err "llama-server exited during startup (pid $_pid)."
+            break
+        fi
+        if command -v curl >/dev/null 2>&1 &&
+           curl -sf --max-time 5 "http://127.0.0.1:$BONSAI_PORT/health" >/dev/null 2>&1; then
+            # /health only proves the process is up. In router mode the model
+            # load happens per-request, and that is what hangs on a wedged
+            # runtime, so verify one real generation too.
+            _deep_rc=0
+            _deep="$(curl -sf --max-time 90 \
+                "http://127.0.0.1:$BONSAI_PORT/v1/chat/completions" \
+                -H 'Content-Type: application/json' \
+                -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' \
+                2>/dev/null)" || _deep_rc=$?
+            if [ "$_deep_rc" = 0 ] && [ -n "$_deep" ]; then
+                _ok=1
+                break
+            fi
+            if [ "$_deep_rc" = 28 ]; then
+                # curl 28 = operation timeout: the load is wedged, not merely
+                # failing. This is the "user grabs a model and it hangs" case.
+                err "Model load timed out after 90s. The GPU runtime is likely wedged"
+                err "by a previously killed load. Recover with: pkill -9 llama-server,"
+                err "then retry; reboot if it persists."
+                break
+            fi
+            # Any other failure (e.g. the first model does not fit VRAM) is a
+            # warning, not a start failure: the server is up and another model
+            # may serve fine.
+            warn "Startup generation check failed (curl rc=$_deep_rc); the server is"
+            warn "up but the default model may not load. Other models may serve fine."
+            _ok=1
+            break
+        fi
+        sleep 1
+        _i=$((_i + 1))
+    done
+
+    if [ "$_ok" = 1 ]; then
+        info "Started in background (pid $_pid), healthy."
+        dim "  log: $LOG"
+        dim "  stop: ./scripts/stop-server.sh"
+        exit 0
+    fi
+
+    # Failure path: kill it, show why, exit non-zero. The log tail is the
+    # whole point - a hang shows the loader stalling, an OOM shows the
+    # allocator, a crash shows the reason.
+    kill "$_pid" 2>/dev/null
+    sleep 1
+    kill -9 "$_pid" 2>/dev/null
+    rm -f "$STATE_DIR/server.pid"
+    err "Server failed to become healthy within ${_health_timeout}s."
+    echo "" >&2
+    if [ -s "$LOG" ]; then
+        echo "  Last log lines:" >&2
+        tail -15 "$LOG" | sed 's/^/    /' >&2
+    else
+        echo "  Log is empty - the loader produced no output at all." >&2
+    fi
+    echo "" >&2
+    echo "  Common causes:" >&2
+    echo "    - GPU runtime wedged by a previously killed load (reboot clears it)" >&2
+    echo "    - model + KV cache larger than VRAM at ctx $BONSAI_CTX" >&2
+    echo "    - slow first load: retry with BONSAI_START_TIMEOUT=300" >&2
+    exit 1
 fi
 
 dim "Ctrl+C to stop."

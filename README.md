@@ -21,6 +21,25 @@ matching prebuilt binary, and pulls a model that fits. Then:
 ./scripts/hermes-wire.sh      # in another terminal, point Hermes at it
 ```
 
+### Or install it as a command
+
+If you would rather not keep a clone around, `install.sh` puts a `bonsai` command on
+your `PATH` (no root needed). After that, `bonsai` works from any directory, in any
+shell:
+
+```bash
+./install.sh                  # installs to ~/.local
+bonsai detect                 # what hardware was found, which backend
+bonsai start                  # first run downloads the binary + a model
+bonsai status
+```
+
+`./install.sh --prefix /opt/bonsai` installs elsewhere, `--status` shows what is
+installed, `--uninstall` removes it. Re-run `install.sh` from a newer checkout to
+update. Release tarballs (`.tar.gz` + checksum) are built automatically on every
+`v*` tag; extract one and run its `install.sh` to install without cloning.
+
+
 ---
 
 ## What is a Bonsai model?

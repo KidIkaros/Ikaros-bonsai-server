@@ -256,10 +256,31 @@ download_repo() {
     fi
     [ -n "$_tree" ] || die "No .gguf files in $_repo."
 
+    # Match the pattern against the basename. An exact name matches exactly;
+    # a pattern containing '*' is treated as a glob anchored on both ends, so
+    # '*-Q4*' matches only Q4 files rather than (as an earlier version did)
+    # printing every file in the repo whenever the pattern contained a '*'
+    # anywhere - which turned a narrow request into a full-repo download.
     _matched="$(printf '%s\n' "$_tree" | awk -v p="$_pattern" '
-        { path=$2 }
-        p == path { print; next }
-        index(p, "*") > 0 { print }
+        function basename(path,   n, a) {
+            n = split(path, a, "/")
+            return a[n]
+        }
+        {
+            b = basename($2)
+            if (p == b)                    { print; next }
+            if (index(p, "*") == 0)        { next }
+            # Glob: build a regex from the pattern, anchored both ends.
+            re = "^"
+            m = split(p, segs, "*")
+            for (i = 1; i <= m; i++) {
+                gsub(/[][(){}.?+^$|\\]/, "\\\\&", segs[i])
+                re = re segs[i]
+                if (i < m) re = re ".*"
+            }
+            re = re "$"
+            if (b ~ re) print
+        }
     ')"
     [ -n "$_matched" ] || die "No .gguf in $_repo matches '$_pattern'. Try --list."
 
