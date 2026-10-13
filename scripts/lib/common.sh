@@ -320,28 +320,37 @@ kv_mib() {
         'BEGIN { printf "%.0f", bpc * (bits / 16) * cells / 1048576 }'
 }
 
-# speed_get MODEL CELLS TYPE - measured tokens per second, or nothing.
+# speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] - measured tokens per second.
+#
+# Keyed by backend and release as well as model and cache type. A speed measured
+# on one backend does not transfer to another: the same model measured 36.1 on
+# ROCm and 30.4 on Vulkan. Without the backend in the key, switching backends
+# reported the old number as if it were current.
 speed_get() {
     [ -f "$SPEED_CACHE" ] || return 1
-    local _key
+    local _key _b _rel
     _key="$(basename "$1")"
-    awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" \
-        '$1 == k && $2 == c && $3 == t { print $4; found=1 } END { exit !found }' "$SPEED_CACHE"
+    _b="${4:-${BACKEND:-unknown}}"
+    _rel="${5:-${PRISM_RELEASE:-unknown}}"
+    awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
+        '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
 }
 
-# speed_set MODEL CELLS TYPE TPS - record a measurement, replacing any old one.
+# speed_set MODEL CELLS TYPE TPS [BACKEND] [RELEASE] - record a measurement.
 speed_set() {
     mkdir -p "$STATE_DIR"
-    local _key _tmp
+    local _key _tmp _b _rel
     _key="$(basename "$1")"
+    _b="${5:-${BACKEND:-unknown}}"
+    _rel="${6:-${PRISM_RELEASE:-unknown}}"
     _tmp="$SPEED_CACHE.tmp"
     if [ -f "$SPEED_CACHE" ]; then
-        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" \
-            '!($1 == k && $2 == c && $3 == t)' "$SPEED_CACHE" > "$_tmp"
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
+            '!($1 == k && $2 == c && $3 == t && $4 == b && $5 == r)' "$SPEED_CACHE" > "$_tmp"
     else
         : > "$_tmp"
     fi
-    printf '%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$4" >> "$_tmp"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$_b" "$_rel" "$4" >> "$_tmp"
     mv "$_tmp" "$SPEED_CACHE"
 }
 
@@ -380,20 +389,36 @@ model_size_bytes() {
 # f16 is measurably faster than q8_0 but needs 1.87x the cache, so it is only
 # the right default when the largest installed model still fits with it. The
 # largest model is the binding constraint: if it fits, everything does.
-kv_type_auto() {
+# kv_type_auto_choice - print "TYPE<TAB>REASON".
+#
+# The reason matters as much as the type. q8_0 comes out of four different
+# situations and only one of them is a decision: no models, an unmeasured
+# model, no budget, or a real fit. Reporting "fastest that fits" for the first
+# three would claim a check that never ran, which is the same failure as a
+# classifier labelling something it has never seen.
+kv_type_auto_choice() {
     local _largest _w_gb _kv_gb _budget
 
     _largest="$(find "$MODELS_DIR" -name '*.gguf' \
-        -not -name '*mmproj*' -not -name 'kv-mean-center-*' -not -name '*dspark*' \
+        -not -name '*mmproj*' -not -name '*kv-mean-center-*' -not -name '*dspark*' \
         2>/dev/null | while IFS= read -r _f; do
             printf '%s\t%s\n' "$(model_size_bytes "$_f")" "$_f"
         done | sort -rn | head -1 | cut -f2)"
 
-    # Without a measurement we cannot price the cache, so take the safe option.
-    [ -n "$_largest" ] || { printf 'q8_0'; return 0; }
-    kv_measured "$_largest" 2>/dev/null || { printf 'q8_0'; return 0; }
+    [ -n "$_largest" ] || {
+        printf 'q8_0\tno models installed, so the safe default'
+        return 0
+    }
+    kv_measured "$_largest" 2>/dev/null || {
+        printf 'q8_0\t%s is unmeasured, so the safe default; run --measure to decide' \
+            "$(basename "$_largest")"
+        return 0
+    }
 
-    _budget="$(kv_budget_gb)" || { printf 'q8_0'; return 0; }
+    _budget="$(kv_budget_gb)" || {
+        printf 'q8_0\tno memory budget known, so the safe default'
+        return 0
+    }
     _w_gb="$(awk -v b="$(model_size_bytes "$_largest")" 'BEGIN { printf "%.2f", b/1073741824 }')"
 
     for _t in f16 q8_0; do
@@ -401,10 +426,25 @@ kv_type_auto() {
             awk '{ printf "%.2f", $1/1024 }')"
         [ -n "$_kv_gb" ] || continue
         if awk -v w="$_w_gb" -v k="$_kv_gb" -v b="$_budget" 'BEGIN { exit !(w + k <= b) }'; then
-            printf '%s' "$_t"; return 0
+            if [ "$_t" = "f16" ]; then
+                printf 'f16\tfastest type that fits the largest installed model'
+            else
+                printf 'q8_0\tf16 does not fit the largest installed model'
+            fi
+            return 0
         fi
     done
-    printf 'q8_0'
+    printf 'q8_0\tneither f16 nor q8_0 fits the budget'
+}
+
+# kv_type_auto - the chosen type alone.
+kv_type_auto() {
+    kv_type_auto_choice | cut -f1
+}
+
+# kv_type_auto_reason - why that type was chosen.
+kv_type_auto_reason() {
+    kv_type_auto_choice | cut -f2
 }
 
 # kv_type_resolve - replace a configured "auto" with a concrete type, in place.

@@ -101,7 +101,9 @@ fi
 # allowed list rather than deep inside llama-server.
 # Resolve "auto" now that detection and the measurements are available.
 if [ "$BONSAI_KV_TYPE" = "auto" ]; then
-    _auto_reason="fastest type that fits the largest installed model"
+    # Take the reason from the resolver rather than asserting one here: an
+    # unmeasured model falls back to q8_0 without ever checking what fits.
+    _auto_reason="$(kv_type_auto_reason)"
     _auto_note=1
 fi
 kv_type_resolve

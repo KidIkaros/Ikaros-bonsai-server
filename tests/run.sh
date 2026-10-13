@@ -442,6 +442,56 @@ assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
 
 rm -rf "$_tmpdir"
 
+group "auto KV reports whether it actually decided"
+
+# q8_0 comes out of four situations and only one is a decision. An unmeasured
+# model must say so rather than claiming it checked what fits.
+_cd="$(mktemp -d)"
+ln -sf /dev/null "$_cd/never-measured.gguf"
+_reason() {
+    BONSAI_MODELS_DIR="$_cd" BONSAI_CTX=65536 bash -c ". scripts/lib/common.sh; kv_type_auto_reason" 2>/dev/null
+}
+_r="$(_reason)"
+case "$_r" in
+    *unmeasured*) pass "an unmeasured model is reported as unmeasured" ;;
+    *)            fail "an unmeasured model should say so" "got '$_r'" ;;
+esac
+if [ "$(_reason)" = "fastest type that fits the largest installed model" ]; then
+    fail "an unmeasured model must not claim it checked what fits"
+else
+    pass "it does not claim a check that did not run"
+fi
+rm -rf "$_cd"
+
+group "speed cache keying"
+
+# A speed measured on one backend must not be served for another: the same
+# model measured 36.1 on ROCm and 30.4 on Vulkan. And a measurement from an
+# older build must not survive a release bump.
+_spd="$(mktemp -d)"
+_speed_probe() {
+    STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+        BACKEND="$1" bash -c ". scripts/lib/common.sh; speed_get m.gguf 65536 q8_0" 2>/dev/null
+}
+STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+    BACKEND=rocm bash -c ". scripts/lib/common.sh; speed_set m.gguf 65536 q8_0 36.1" 2>/dev/null
+STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10772-e8fd209" \
+    BACKEND=vulkan bash -c ". scripts/lib/common.sh; speed_set m.gguf 65536 q8_0 30.4" 2>/dev/null
+
+assert_eq "rocm reads back its own speed" "36.1" "$(_speed_probe rocm)"
+assert_eq "vulkan reads back its own speed" "30.4" "$(_speed_probe vulkan)"
+if [ -n "$(_speed_probe cuda)" ]; then
+    fail "an unmeasured backend must not borrow another backend's speed"
+else
+    pass "an unmeasured backend reports nothing"
+fi
+if [ -n "$(STATE_DIR="$_spd" SPEED_CACHE="$_spd/speed.tsv" PRISM_RELEASE="prism-b10999-deadbee" BACKEND=rocm bash -c ". scripts/lib/common.sh; speed_get m.gguf 65536 q8_0" 2>/dev/null)" ]; then
+    fail "a measurement from another release must not be served"
+else
+    pass "a measurement from another release is treated as stale"
+fi
+rm -rf "$_spd"
+
 group "download integrity"
 
 _tmpdir="$(mktemp -d)"
