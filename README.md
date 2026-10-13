@@ -488,6 +488,14 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
   project's ROCm or Vulkan path is what you want; if you are on an RTX card, look there
   first.
 
+## Exit codes
+
+`bonsai` and the scripts follow the usual convention: `0` success, `1` a
+runtime failure (no server answering, no model installed, out of memory), `2`
+a usage error (unknown command or flag, bad value, missing argument). A
+wrapper can tell "you called me wrong" from "the world is wrong" without
+parsing stderr.
+
 ## Environment variables
 
 | Variable | Default | Meaning |

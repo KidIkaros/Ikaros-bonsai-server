@@ -1374,6 +1374,38 @@ else
 fi
 rm -rf "$_fj"
 
+group "exit codes"
+
+# A usage error (bad flag, bad value, wrong arg count) must exit 2, distinct
+# from a runtime failure (no server, no model) which exits 1. A wrapper script
+# can then tell "you called me wrong" from "the world is wrong" without
+# parsing stderr.
+_ec="$(mktemp -d)"
+_expect_rc() {
+    local _want="$1"; shift
+    BONSAI_STATE_DIR="$_ec" "$@" >/dev/null 2>&1
+    local _got=$?
+    if [ "$_got" = "$_want" ]; then
+        pass "rc=$_want: $*"
+    else
+        fail "expected rc=$_want, got rc=$_got: $*"
+    fi
+}
+# Usage errors -> 2.
+_expect_rc 2 "$SCRIPTS/bonsai" zzzzz
+_expect_rc 2 "$SCRIPTS/bonsai" set
+_expect_rc 2 "$SCRIPTS/bonsai" set ctx abc
+_expect_rc 2 "$SCRIPTS/bonsai" set kv bogus
+_expect_rc 2 "$SCRIPTS/bonsai" completions tcsh
+_expect_rc 2 "$SCRIPTS/assess.sh" --bogus-flag
+_expect_rc 2 "$SCRIPTS/assess.sh" --context abc
+# Runtime failures -> 1 (NOT 2: these are not the user's fault in the same way).
+_expect_rc 1 "$SCRIPTS/bonsai" speed
+_expect_rc 1 "$SCRIPTS/bonsai" identity "$_ec/nope.gguf"
+# A valid command that prints help exits 0.
+_expect_rc 0 "$SCRIPTS/bonsai" help
+rm -rf "$_ec"
+
 group "script syntax"
 
 _syntax_fail=""

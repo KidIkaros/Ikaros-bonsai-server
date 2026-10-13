@@ -67,12 +67,12 @@ while [ $# -gt 0 ]; do
         --coverage) COVERAGE=1 ;;
         --tune-tokens) TUNE_TOKENS="${2:-64}"; shift ;;
         -h|--help)  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) die "Unknown option: $1" ;;
+        *) usage_die "Unknown option: $1" ;;
     esac
     shift
 done
 
-case "$CONTEXT" in ''|*[!0-9]*) die "--context needs a number, got '$CONTEXT'." ;; esac
+case "$CONTEXT" in ''|*[!0-9]*) usage_die "--context needs a number, got '$CONTEXT'." ;; esac
 
 if detect_is_stale; then
     "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1
@@ -87,7 +87,7 @@ kv_type_resolve
 # q8_0 here, which was written when f16 meant "quantization disabled"; now that
 # auto can pick f16, that mapping would report a type the server will not use.
 KV_TYPE="$(kv_type_effective)"
-kv_type_valid "$KV_TYPE" || die "Unknown KV cache type '$KV_TYPE'. Allowed: $KV_CACHE_TYPES"
+kv_type_valid "$KV_TYPE" || usage_die "Unknown KV cache type '$KV_TYPE'. Allowed: $KV_CACHE_TYPES"
 
 SERVER_BIN="$(llama_server_bin)" || die "No llama-server installed. Run: ./scripts/fetch-binary.sh"
 

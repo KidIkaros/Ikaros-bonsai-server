@@ -215,7 +215,7 @@ except Exception:
         KEY="${1:-}"
         VAL="${2:-}"
         if [ -z "$KEY" ] || [ -z "$VAL" ]; then
-            die "Usage: ./scripts/bonsai set <key> <value>
+            usage_die "Usage: ./scripts/bonsai set <key> <value>
        keys: port, ctx, ngl, kv, threads, models, moe-cache-mib"
         fi
 
@@ -229,17 +229,17 @@ except Exception:
             moe-cache-mib|moe-cache) VAR="BONSAI_MOE_CACHE_MIB" ;;
             spec-type)   VAR="BONSAI_SPEC_TYPE" ;;
             BONSAI_*)    VAR="$KEY" ;;
-            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib" ;;
+            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib" ;;
         esac
 
         case "$VAR" in
             BONSAI_CTX|BONSAI_PORT|BONSAI_NGL|BONSAI_THREADS|BONSAI_MOE_CACHE_MIB)
-                case "$VAL" in ''|*[!0-9]*) die "$KEY needs a number, got '$VAL'." ;; esac ;;
+                case "$VAL" in ''|*[!0-9]*) usage_die "$KEY needs a number, got '$VAL'." ;; esac ;;
             BONSAI_KV_TYPE)
                 case "$VAL" in
                     auto) ;;
                     *) kv_type_valid "$VAL" ||
-                        die "Unknown KV cache type '$VAL'. Allowed: auto, $KV_CACHE_TYPES" ;;
+                        usage_die "Unknown KV cache type '$VAL'. Allowed: auto, $KV_CACHE_TYPES" ;;
                 esac ;;
         esac
 
@@ -537,7 +537,7 @@ EOF
                 printf 'complete -c bonsai -n "__fish_seen_subcommand_from logs" -a "-f"\n'
                 ;;
             *)
-                die "Unknown shell '$_shell'. Try: bash, zsh, fish" ;;
+                usage_die "Unknown shell '$_shell'. Try: bash, zsh, fish" ;;
         esac
         ;;
 
@@ -580,9 +580,9 @@ EOF
             return 1
         }
         if _near="$(suggest_cmd "$CMD")"; then
-            die "Unknown command '$CMD'. Did you mean '$_near'?
+            usage_die "Unknown command '$CMD'. Did you mean '$_near'?
        All commands: ./scripts/bonsai help"
         fi
-        die "Unknown command '$CMD'. Try: ./scripts/bonsai help"
+        usage_die "Unknown command '$CMD'. Try: ./scripts/bonsai help"
         ;;
 esac

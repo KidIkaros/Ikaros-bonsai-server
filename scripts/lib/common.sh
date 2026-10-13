@@ -294,6 +294,14 @@ dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
 
 die() { err "$*"; exit 1; }
 
+# usage_die - like die, but exit 2: the conventional code for a usage error
+# (bad flag, bad value, wrong argument count), distinct from 1, a runtime
+# failure (no server, no model, out of memory). A script wrapping bonsai can
+# now tell "you called me wrong" from "the world is wrong" without parsing
+# stderr. Only the argument-validation paths use this; a runtime failure keeps
+# exit 1, because that is what it is.
+usage_die() { err "$*"; exit 2; }
+
 # ---------------------------------------------------------------------------
 # Input
 # ---------------------------------------------------------------------------
