@@ -829,15 +829,24 @@ detect_is_stale() {
 # hf_tree_raw REPO [REVISION] - print the raw HF tree JSON, or fail.
 hf_tree_raw() {
     local _repo="$1" _rev="${2:-main}"
-    local -a _auth=()
-    _auth=()
-    [ -n "${HF_TOKEN:-}" ] && _auth=(-H "Authorization: Bearer $HF_TOKEN")
+    local _url="https://huggingface.co/api/models/$_repo/tree/$_rev"
+
+    # Build the argument list, then append the URL last. The previous form
+    # passed a literal "" positional when no HF_TOKEN was set, and curl takes
+    # the first positional as its URL target - so the real URL was ignored and
+    # every tokenless call failed with rc 22. Appending the URL after the
+    # (possibly empty) list keeps it in the right slot either way.
+    local -a _args=()
+    [ -n "${HF_TOKEN:-}" ] && _args+=(-H "Authorization: Bearer ${HF_TOKEN}")
 
     if command -v curl >/dev/null 2>&1; then
-        curl -sf "${_auth[@]}" "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
-    else
-        wget -qO- --header="Authorization: Bearer ${HF_TOKEN:-}" \
-             "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
+        curl -sf "${_args[@]}" "$_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        if [ -n "${HF_TOKEN:-}" ]; then
+            wget -qO- --header="Authorization: Bearer ${HF_TOKEN}" "$_url" 2>/dev/null
+        else
+            wget -qO- "$_url" 2>/dev/null
+        fi
     fi
 }
 
