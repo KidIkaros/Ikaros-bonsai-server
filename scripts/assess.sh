@@ -384,9 +384,9 @@ if [ "$TUNE" = 1 ]; then
     : > "$_results"
     echo ""
 
-    # label | kv type | extra server args | env to reproduce
+    # label | kv type | extra server args | env to reproduce | ngl (optional)
     run_variant() {
-        _label="$1" _kv="$2" _extra="$3" _env="$4"
+        _label="$1" _kv="$2" _extra="$3" _env="$4" _ngl="${5:-${BONSAI_NGL}}"
 
         # A cache that does not fit is not a candidate, so check before loading.
         _kvmib="$(kv_mib "$TUNE_PATH" "$CONTEXT" "$_kv" || true)"
@@ -405,7 +405,7 @@ if [ "$TUNE" = 1 ]; then
         _runs=""
         for _rep in 1 2 3; do
             # shellcheck disable=SC2086
-            _one="$(bench_tps "$TUNE_PATH" "$BONSAI_NGL" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
+            _one="$(bench_tps "$TUNE_PATH" "$_ngl" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
             _runs="${_runs}${_one}
 "
         done
@@ -421,6 +421,10 @@ if [ "$TUNE" = 1 ]; then
         coverage_set kv "$_kv"
         coverage_set backend "${BACKEND:-unknown}"
         coverage_set context "$CONTEXT"
+        # A tune run measures a real offload level on this backend, so the ngl
+        # dimension counts as explored (otherwise coverage keeps prompting for a
+        # separate --sweep on machines that already tuned).
+        [ "$BACKEND" != "cpu" ] && [ -n "$_ngl" ] && coverage_set ngl "$_ngl"
         case "$_label" in
             *"n-max 1"|*"n-max 2") coverage_set spec "draft-mtp" ;;
             *ubatch*)              coverage_set ubatch "$(printf '%s' "$_label" | grep -oE '[0-9]+$' || echo 512)" ;;
@@ -431,16 +435,38 @@ if [ "$TUNE" = 1 ]; then
     printf '  %s\n' "----------------------------------------------"
 
     # The default first, so every other row has something to be compared to.
+    #
+    # The offload split (how many layers live on the GPU) is the single biggest
+    # throughput lever - up to 4.2x - and it is machine-specific. A card too small
+    # for full offload cannot even load the model, so the baseline is capped at the
+    # largest split that fits this machine, and that split is recorded in the env
+    # string so the winner is safe to apply on this hardware, not just the one it
+    # was measured on.
+    _TUNE_NGL="$BONSAI_NGL"
+    _ENV_SUFFIX=""
+    if [ "$BACKEND" != "cpu" ]; then
+        _TUNE_NLAYER="$(kv_layers_get "$TUNE_PATH" || true)"
+        if [ -n "$_TUNE_NLAYER" ] 2>/dev/null && [ "$_TUNE_NLAYER" -gt 0 ] 2>/dev/null; then
+            _TUNE_KV_GB="$(awk -v m="$(kv_mib "$TUNE_PATH" "$CONTEXT" "$KV_TYPE" || true)" 'BEGIN { printf "%.4f", (m+0)/1024 }')"
+            _TUNE_MAX_FIT="$(awk -v b="$BUDGET_AVAIL" -v k="$_TUNE_KV_GB" -v w="$W_GB" -v n="$_TUNE_NLAYER" 'BEGIN { p=w/n; if (p<=0){print n; exit} f=int((b-k)/p); if(f<0)f=0; if(f>n)f=n; print f }')"
+            if [ "$_TUNE_MAX_FIT" -lt "$_TUNE_NLAYER" ]; then
+                _TUNE_NGL="$_TUNE_MAX_FIT"
+                dim "  Full offload does not fit ($_TUNE_NLAYER layers); baseline capped at $_TUNE_MAX_FIT."
+            fi
+            _ENV_SUFFIX=" BONSAI_NGL=$_TUNE_NGL"
+        fi
+    fi
+
     run_variant "q8_0 KV, ubatch 512 (default)" "q8_0" "--ubatch-size 512" \
-        "BONSAI_KV_TYPE=q8_0"
+        "BONSAI_KV_TYPE=q8_0$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q4_0 KV, ubatch 512" "q4_0" "--ubatch-size 512" \
-        "BONSAI_KV_TYPE=q4_0"
+        "BONSAI_KV_TYPE=q4_0$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "f16 KV, ubatch 512" "f16" "--ubatch-size 512" \
-        "BONSAI_KV_TYPE=f16"
+        "BONSAI_KV_TYPE=f16$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q8_0 KV, ubatch 256" "q8_0" "--ubatch-size 256" \
-        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 256\""
+        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 256\"$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q8_0 KV, ubatch 1024" "q8_0" "--ubatch-size 1024" \
-        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 1024\""
+        "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 1024\"$_ENV_SUFFIX" "$_TUNE_NGL"
 
     # An MTP model carries its own draft head. The best window depends on the
     # backend: on Vulkan n-max 2 measured fastest, on ROCm n-max 1 did, so both
@@ -449,10 +475,10 @@ if [ "$TUNE" = 1 ]; then
         *mtp*)
             run_variant "draft-mtp n-max 1" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 1" \
-                "BONSAI_SPEC_TYPE=draft-mtp"
+                "BONSAI_SPEC_TYPE=draft-mtp$_ENV_SUFFIX" "$_TUNE_NGL"
             run_variant "draft-mtp n-max 2" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 2" \
-                "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=2"
+                "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=2$_ENV_SUFFIX" "$_TUNE_NGL"
             ;;
     esac
 

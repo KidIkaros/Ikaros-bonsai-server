@@ -629,6 +629,85 @@ STATE_DIR="$_old_state"
 SETTINGS_FILE="$STATE_DIR/service.env"
 rm -rf "$_tmpdir"
 
+
+group "tune winner persistence"
+
+# write_tune_best records every key the winner set, and apply_tune_best projects
+# the machine-level ones onto the live settings file.
+_tune_dir() {
+    _td="$(mktemp -d)"
+    BONSAI_STATE_DIR="$_td" bash -c '. scripts/lib/common.sh; '"$1" 2>/dev/null
+    printf '%s' "$_td"
+}
+
+_td="$(_tune_dir 'write_tune_best "BONSAI_KV_TYPE=q8_0 BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=1 BONSAI_NGL=24" rocm')"
+if grep -qx 'BONSAI_NGL=24' "$_td/tune-best.env"; then
+    pass "winner records BONSAI_NGL when set"
+else
+    fail "winner should record BONSAI_NGL"
+    [ -f "$_td/tune-best.env" ] && sed -n '1,20p' "$_td/tune-best.env" >&2
+fi
+BACKEND=rocm BONSAI_STATE_DIR="$_td" bash -c '. scripts/lib/common.sh; apply_tune_best' >/dev/null 2>&1
+if grep -qx 'BONSAI_NGL=24' "$_td/service.env"; then
+    pass "apply persists BONSAI_NGL from the winner"
+else
+    fail "apply should persist BONSAI_NGL"
+fi
+rm -rf "$_td"
+
+# A winner that did not set NGL must not pull the ambient default into the file.
+_td="$(_tune_dir 'write_tune_best "BONSAI_KV_TYPE=q8_0" rocm')"
+BACKEND=rocm BONSAI_STATE_DIR="$_td" bash -c '. scripts/lib/common.sh; apply_tune_best' >/dev/null 2>&1
+if grep -q '^BONSAI_NGL=' "$_td/service.env"; then
+    fail "apply must not persist an unset BONSAI_NGL"
+else
+    pass "apply leaves BONSAI_NGL unset when the winner did not set it"
+fi
+rm -rf "$_td"
+
+# Cross-backend: NGL (machine-level) survives, the backend-specific spec is
+# dropped so a Vulkan-tuned draft-mtp does not run on ROCm.
+_td="$(_tune_dir 'write_tune_best "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=2 BONSAI_NGL=24" rocm')"
+BACKEND=vulkan BONSAI_STATE_DIR="$_td" bash -c '. scripts/lib/common.sh; apply_tune_best' >/dev/null 2>&1
+if grep -qx 'BONSAI_NGL=24' "$_td/service.env"; then
+    pass "cross-backend apply keeps machine-level NGL"
+else
+    fail "NGL should survive a cross-backend apply"
+fi
+if ! grep -qx 'BONSAI_SPEC_TYPE=*' "$_td/service.env" && [ -z "$(grep '^BONSAI_SPEC_TYPE=' "$_td/service.env" 2>/dev/null)" ]; then
+    pass "cross-backend apply drops stale spec"
+else
+    fail "stale spec should be cleared on a cross-backend apply"
+fi
+rm -rf "$_td"
+
+group "bonsai set"
+
+_td="$(mktemp -d)"
+BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set threads 8 >/dev/null 2>&1
+if grep -qx 'BONSAI_THREADS=8' "$_td/service.env"; then
+    pass "set threads writes BONSAI_THREADS"
+else
+    fail "set threads should write BONSAI_THREADS=8"
+fi
+if BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set threads notnum >/dev/null 2>&1; then
+    fail "set threads should reject a non-numeric value"
+else
+    pass "set threads rejects non-numeric input"
+fi
+if BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set ngl 36 >/dev/null 2>&1; then
+    pass "set ngl is accepted"
+else
+    fail "set ngl should be accepted"
+fi
+BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set kv q4_0 >/dev/null 2>&1
+if grep -qx 'BONSAI_KV_TYPE=q4_0' "$_td/service.env"; then
+    pass "set kv writes BONSAI_KV_TYPE"
+else
+    fail "set kv should write BONSAI_KV_TYPE=q4_0"
+fi
+rm -rf "$_td"
+
 group "script syntax"
 
 _syntax_fail=""

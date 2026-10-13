@@ -156,6 +156,14 @@ esac
 # shellcheck disable=SC2206
 EXTRA_ARGS=(${BONSAI_EXTRA_ARGS:-})
 
+# Threads come from the setting (or `bonsai set threads`), falling back to all
+# cores. Validated here so a bad value fails with a clear message instead of a
+# cryptic llama-server error.
+BONSAI_THREADS="${BONSAI_THREADS:-$(nproc 2>/dev/null || echo 4)}"
+case "$BONSAI_THREADS" in
+    ''|*[!0-9]*) die "BONSAI_THREADS must be a number, got '$BONSAI_THREADS'.\n       Example: ./scripts/bonsai set threads 8" ;;
+esac
+
 CMD=(
     "$SERVER_BIN"
     --models-dir "$MODELS_DIR"
@@ -163,7 +171,7 @@ CMD=(
     --host 0.0.0.0
     --port "$BONSAI_PORT"
     --ctx-size "$BONSAI_CTX"
-    --threads "$(nproc 2>/dev/null || echo 4)"
+    --threads "$BONSAI_THREADS"
     --flash-attn on
     --no-warmup
     --jinja

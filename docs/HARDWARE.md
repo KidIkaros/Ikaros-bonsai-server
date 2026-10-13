@@ -293,8 +293,11 @@ Measured on the 8B at 16384 context. The ordering matters more than the exact fi
 | `--flash-attn off` | fails: a quantized V cache requires flash attention |
 
 Run-to-run variance on this hardware is around 2-3%, so anything smaller than that is
-noise. `./scripts/bonsai tune` measures the same set on your machine and will not call a
-gap inside the noise a win.
+noise. `./scripts/bonsai tune` measures the same set on your machine and will not call
+a gap inside the noise a win. It also checks the GPU offload split for you: if this
+machine is too small for a full offload, it caps the baseline at the largest split that
+fits and records it, so `./scripts/bonsai apply` serves a config that loads here rather
+than OOMing on a smaller card.
 
 The thread result is worth stating plainly because the usual advice is to tune it: with
 every layer on the GPU, generation is bound by the GPU, and moving threads between 8 and

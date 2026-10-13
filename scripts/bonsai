@@ -217,14 +217,15 @@ except Exception:
             port)        VAR="BONSAI_PORT" ;;
             ctx|context) VAR="BONSAI_CTX" ;;
             ngl|gpu-layers) VAR="BONSAI_NGL" ;;
+            threads|cpu-threads) VAR="BONSAI_THREADS" ;;
             kv|kv-type)  VAR="BONSAI_KV_TYPE" ;;
             models|models-dir) VAR="BONSAI_MODELS_DIR" ;;
             BONSAI_*)    VAR="$KEY" ;;
-            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, models" ;;
+            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models" ;;
         esac
 
         case "$VAR" in
-            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL)
+            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL|BONSAI_THREADS)
                 case "$VAL" in ''|*[!0-9]*) die "$KEY needs a number, got '$VAL'." ;; esac ;;
             BONSAI_KV_TYPE)
                 case "$VAL" in

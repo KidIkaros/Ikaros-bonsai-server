@@ -183,10 +183,12 @@ write_tune_best() {
         # recorded as part of the winner. Then parse ENVSTRING with eval so
         # quoted values like BONSAI_EXTRA_ARGS="--ubatch-size 256" come through.
         ( unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
+                BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
+                BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
             eval "$_env" 2>/dev/null || true
             for _k in BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                      BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS; do
+                      BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
+                      BONSAI_EXTRA_ARGS BONSAI_THREADS; do
                 [ -n "${!_k}" ] && printf '%s=%s\n' "$_k" "${!_k}"
             done
             : # ensure the subshell returns success even if the last key was unset
@@ -208,7 +210,8 @@ apply_tune_best() {
     # - e.g. BONSAI_THREADS is always set by common.sh, but a winner that did
     # not measure threads must not drag the default into the settings file.
     unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-          BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS
+          BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
+          BONSAI_EXTRA_ARGS BONSAI_THREADS
     # shellcheck source=/dev/null
     . "$TUNE_BEST_FILE"
     local _tuned_backend="${BONSAI_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
@@ -217,9 +220,12 @@ apply_tune_best() {
         warn "Tune result was measured on backend '$_tuned_backend' but this machine is '$BACKEND'."
         warn "Speculative-decode settings were skipped; applying one of those would be slower here."
     fi
-    # Safe, machine-level knobs.
+    # Safe, machine-level knobs. The offload split (NGL) and thread count are
+    # machine-specific and backend-agnostic in the same way threads are, so they
+    # are applied even on a cross-backend apply (only the spec-type is gated).
     [ -n "${BONSAI_THREADS:-}" ]     && { settings_set BONSAI_THREADS "$BONSAI_THREADS"; _applied=1; }
     [ -n "${BONSAI_EXTRA_ARGS:-}" ]  && { settings_set BONSAI_EXTRA_ARGS "$BONSAI_EXTRA_ARGS"; _applied=1; }
+    [ -n "${BONSAI_NGL:-}" ]         && { settings_set BONSAI_NGL "$BONSAI_NGL"; _applied=1; }
     # Speculative settings: backend-specific. Only apply when the backend
     # matches the one the winner was measured under; otherwise drop any stale
     # value so a config tuned for Vulkan, say, does not end up running on ROCm
@@ -239,7 +245,7 @@ apply_tune_best() {
     fi
     if [ "$_applied" = 0 ]; then
         # Winner was the default; make sure no stale tuned values linger.
-        settings_unset BONSAI_THREADS BONSAI_EXTRA_ARGS BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        settings_unset BONSAI_THREADS BONSAI_EXTRA_ARGS BONSAI_NGL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
         info "Tune winner was the default config; nothing to apply."
     else
         info "Applied the tune winner to $SETTINGS_FILE."
