@@ -628,10 +628,14 @@ log_draft_acceptance() {
         grep -oE '[0-9.]+' | tail -1
 }
 
-# acceptance_verdict RATE - "works" / "weak" / "no drafts". The thresholds are
+# acceptance_verdict RATE - how well a spec type is paying. The thresholds are
 # the community rule of thumb, not a measured cliff on this hardware: 0.10 is
 # where PR #19164 says a speedup starts, so anything under it is reported as
-# weak rather than silently treated as fine.
+# weak rather than silently treated as fine. An empty rate means the run used
+# no spec type at all (or the build prints no draft line, which is what the
+# PrismML ternary models do with n-gram spec) - "no drafts", distinct from a
+# measured 0.05, because one says "nothing was attempted" and the other says
+# "the drafts are being rejected".
 acceptance_verdict() {
     local _r="${1:-}"
     [ -n "$_r" ] || { printf 'no drafts'; return 0; }

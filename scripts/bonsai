@@ -317,11 +317,22 @@ except Exception:
         fi
         printf '  %8s  %-34s %-8s %8s  %s\n' "tok/s" "model" "offload" "draft" "verdict"
         printf '  %s\n' "--------------------------------------------------------------------------------------"
-        printf '%s\n' "$_rows" | sort -rn |
+        # Sort on field 6 (tok/s) explicitly: the cache's first column is the
+        # model name, so a plain `sort -rn` would order rows by model name and
+        # quietly present the slowest configuration first.
+        printf '%s\n' "$_rows" | sort -t"$(printf '\t')" -k6,6rn |
             while IFS=$'\t' read -r _m _c _t _b _r _tps _ngl _acc; do
+                # "off" means the run used no spec type; "no drafts" means one
+                # was attempted and the build reported nothing. Distinct, so a
+                # baseline row is not read as a failed draft.
+                _shown="${_acc:-off}"
+                if [ -n "$_acc" ]; then
+                    _verdict="$(acceptance_verdict "$_acc")"
+                else
+                    _verdict="(no spec type)"
+                fi
                 printf '  %8s  %-34s %-8s %8s  %s\n' \
-                    "$_tps" "${_m:0:34}" "${_ngl:-?}" \
-                    "${_acc:-(none)}" "$(acceptance_verdict "${_acc:-}")"
+                    "$_tps" "${_m:0:34}" "${_ngl:-?}" "$_shown" "$_verdict"
             done
         echo ""
         # The disable rule: below 0.10 the drafts are rejected often enough

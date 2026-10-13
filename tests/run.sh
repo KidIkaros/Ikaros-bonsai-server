@@ -878,6 +878,51 @@ assert_eq "a legacy row without acceptance is empty" "" \
     "$(_sa_probe cuda 'speed_rows cuda' | awk -F'\t' '$1 == "old.gguf" { print $8 }')"
 rm -rf "$_sa"
 
+group "fastest ranking order"
+
+# The speed cache's first column is the MODEL NAME and tok/s is field 6, so a
+# plain `sort -rn` orders rows by model name and presents the slowest
+# configuration first. Pin the field-6 sort with model names that make a
+# name-sort visibly wrong: a-slow sorts first alphabetically but is the
+# slowest, z-fast sorts last alphabetically but is the fastest.
+_fr="$(mktemp -d)"
+_fr_probe() {
+    BONSAI_STATE_DIR="$_fr" PRISM_RELEASE="prism-b10772-e8fd209" \
+        BACKEND="$1" bash -c ". scripts/lib/common.sh; $2" 2>/dev/null
+}
+_fr_probe cuda 'speed_set a-slow.gguf 65536 q4_0 40.0 cuda prism-b10772-e8fd209 36 0.05'
+_fr_probe cuda 'speed_set z-fast.gguf 65536 q4_0 46.1 cuda prism-b10772-e8fd209 36 0.74'
+_fr_probe cuda 'speed_set m-mid.gguf 65536 q8_0 43.0 cuda prism-b10772-e8fd209 36'
+_fr_sorted="$(_fr_probe cuda 'speed_rows cuda' | sort -t"$(printf '\t')" -k6,6rn)"
+assert_eq "the fastest row sorts first" "z-fast.gguf" "$(printf '%s\n' "$_fr_sorted" | head -1 | cut -f1)"
+assert_eq "the slowest row sorts last" "a-slow.gguf" "$(printf '%s\n' "$_fr_sorted" | tail -1 | cut -f1)"
+assert_eq "ranking is by tok/s, not model name" "46.1 43.0 40.0" \
+    "$(printf '%s\n' "$_fr_sorted" | cut -f6 | paste -sd' ' -)"
+# A name-sort would have produced this wrong order; assert it is not what runs.
+if [ "$(printf '%s\n' "$_fr_sorted" | head -1 | cut -f1)" = "a-slow.gguf" ]; then
+    fail "rows must not be ordered by model name"
+else
+    pass "rows are not ordered by model name"
+fi
+# The weak-acceptance warning looks at field 8.
+if _fr_probe cuda 'speed_rows cuda' | awk -F'\t' '$8 != "" && $8 < 0.10' | grep -q .; then
+    pass "a sub-0.10 acceptance row is detected for the warning"
+else
+    fail "the weak-acceptance warning should detect the 0.05 row"
+fi
+# A row with no spec type must not trip that warning.
+_fr2="$(mktemp -d)"
+BONSAI_STATE_DIR="$_fr2" PRISM_RELEASE="prism-b10772-e8fd209" BACKEND=cuda \
+    bash -c '. scripts/lib/common.sh; speed_set b.gguf 65536 q8_0 40.0 cuda prism-b10772-e8fd209 36' 2>/dev/null
+if BONSAI_STATE_DIR="$_fr2" PRISM_RELEASE="prism-b10772-e8fd209" BACKEND=cuda \
+    bash -c '. scripts/lib/common.sh; speed_rows cuda' 2>/dev/null |
+    awk -F'\t' '$8 != "" && $8 < 0.10' | grep -q .; then
+    fail "a baseline row must not be read as a weak draft"
+else
+    pass "a baseline row is not a weak-draft row"
+fi
+rm -rf "$_fr" "$_fr2"
+
 group "tune ranking with acceptance"
 
 # The tune results file gains a fifth column (draft acceptance), and a winner
