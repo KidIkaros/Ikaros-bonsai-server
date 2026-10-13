@@ -319,8 +319,16 @@ if [ "$TUNE" = 1 ]; then
 
         BENCH_PORT=$((BONSAI_PORT + 203))
         BENCH_LOG="$STATE_DIR/assess-tune.log"
-        # shellcheck disable=SC2086
-        _tps="$(bench_tps "$TUNE_PATH" "$BONSAI_NGL" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
+        # Three runs, median taken. A single run is easily depressed by anything
+        # else touching the GPU, and that was enough to flip a close ranking.
+        _runs=""
+        for _rep in 1 2 3; do
+            # shellcheck disable=SC2086
+            _one="$(bench_tps "$TUNE_PATH" "$BONSAI_NGL" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
+            _runs="${_runs}${_one}
+"
+        done
+        _tps="$(printf '%s' "$_runs" | grep -v '^[[:space:]]*$' | sort -g | awk '{ v[NR] = $1 } END { if (NR == 0) exit 1; print v[int((NR + 1) / 2)] }')"
 
         if [ -z "$_tps" ]; then
             printf '  %-34s %8s  failed\n' "$_label" "-"
@@ -345,6 +353,20 @@ if [ "$TUNE" = 1 ]; then
         "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 256\""
     run_variant "q8_0 KV, ubatch 1024" "q8_0" "--ubatch-size 1024" \
         "BONSAI_KV_TYPE=q8_0 BONSAI_EXTRA_ARGS=\"--ubatch-size 1024\""
+
+    # An MTP model carries its own draft head. The best window depends on the
+    # backend: on Vulkan n-max 2 measured fastest, on ROCm n-max 1 did, so both
+    # are offered and the fastest wins.
+    case "$(basename "$TUNE_PATH")" in
+        *mtp*)
+            run_variant "draft-mtp n-max 1" "$KV_TYPE" \
+                "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 1" \
+                "BONSAI_SPEC_TYPE=draft-mtp"
+            run_variant "draft-mtp n-max 2" "$KV_TYPE" \
+                "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 2" \
+                "BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=2"
+            ;;
+    esac
 
     echo ""
     if [ ! -s "$_results" ]; then

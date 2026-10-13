@@ -384,6 +384,38 @@ against their specific target rather than being a smaller sibling. Compatible vo
 is necessary but nowhere near sufficient: the MTP head works because it was trained for
 exactly this model.
 
+### Vulkan versus ROCm, with and without MTP
+
+Vulkan needs no ROCm at all, and the PTQ1_0 shaders are in the pinned build (upstream PR
+#238 is an ancestor of it), so the no-ROCm path is real rather than partial. Measured on
+an RX 9060 XT with the 27B lean MTP file at 65536 and a `q8_0` cache. Medians, two to
+three generations per configuration:
+
+| Backend | no MTP | `draft-mtp n-max 1` | `draft-mtp n-max 2` |
+|---|---|---|---|
+| ROCm (HIP) | 36.1 | 41.0 | 33.7 |
+| **Vulkan** | 30.4 | 44.0 | **47.1** |
+
+Three things follow.
+
+**Without MTP, ROCm is faster** by about 16% (36.1 against 30.4).
+
+**With MTP, Vulkan wins, and `n-max 2` is the best configuration measured here**: 47.1
+against 41.0 for ROCm with `n-max 1`, a **15% gain**. This is the same effect the CUDA
+kernel buys on NVIDIA: the small batches a draft needs are cheap on the Vulkan PTQ1_0
+shader path and expensive on the HIP path, so on Vulkan the wider window pays and on ROCm
+it does not. On ROCm `n-max 2` is clearly worse (33.7 against 41.0, three runs each).
+
+**Vulkan is not batch-invariant.** ROCm's greedy output is byte-identical with and without
+MTP; Vulkan's is not. Vulkan is deterministic (the same configuration twice gives the same
+text), so this is a real difference in logits between batch sizes rather than noise, and it
+showed up as a near tie flipping "most" to "much" in one paragraph. The text stays clean,
+and for chat or agent use that is harmless, but if you need reproducible greedy output,
+stay on ROCm.
+
+So: fastest is Vulkan with `n-max 2`; most faithful is ROCm with `n-max 1`; and without MTP
+ROCm is simply faster.
+
 ### Trading context for memory
 
 Lowering the context shrinks the cache linearly, and stacks with the type:

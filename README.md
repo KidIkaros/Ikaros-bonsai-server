@@ -329,8 +329,26 @@ Measured here on the 27B MTP file at 65536 with a `q8_0` cache, three generation
 | `draft-mtp`, `n-max 1` | **39.2** | 54% |
 | `draft-mtp`, `n-max 2` | 35.0 | 48% |
 
-So about **+6%**, and `n-max 2` is *worse than not using it* — acceptance drops while the
-wider window costs more. Leave `BONSAI_SPEC_DRAFT_N_MAX` at 1.
+So about **+6%** on ROCm, and `n-max 2` is *worse than not using it* there — acceptance
+drops while the wider window costs more.
+
+**The backend changes the answer.** Vulkan needs no ROCm and its PTQ1_0 shaders are in the
+pinned build, and on Vulkan the wider window does pay:
+
+| Backend | no MTP | `n-max 1` | `n-max 2` |
+|---|---|---|---|
+| ROCm | 36.1 | 41.0 | 33.7 |
+| Vulkan | 30.4 | 44.0 | **47.1** |
+
+Vulkan with `n-max 2` is the fastest configuration measured here at **47.1 tok/s, 15%
+above** ROCm with `n-max 1`. Vulkan is slower without MTP, and it is not batch-invariant
+(a near tie can flip a token), so stay on ROCm if you need reproducible greedy output. See
+[docs/HARDWARE.md](docs/HARDWARE.md#vulkan-versus-rocm-with-and-without-mtp).
+
+```bash
+BACKEND=vulkan ./scripts/setup.sh          # no ROCm needed
+BONSAI_SPEC_DRAFT_N_MAX=2 ./scripts/bonsai start
+```
 
 There is also `BONSAI_DRAFT_MODEL` for a separate `*-dspark-*` drafter. Using a smaller
 Bonsai as a drafter for a bigger one was tested and does not work: the vocabulary is
