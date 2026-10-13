@@ -11,6 +11,7 @@
 #   ./scripts/bonsai speed          quick tokens/sec check against the running server
 #   ./scripts/bonsai fastest        every measured configuration, fastest first
 #   ./scripts/bonsai bench [model]  measure a model on this machine, one row
+#   ./scripts/bonsai identity [model]  is the MTP draft lossless on this backend?
 #   ./scripts/bonsai tune           find the fastest settings on this machine
 #   ./scripts/bonsai apply          persist the last tune's winner to settings
 #   ./scripts/bonsai assess         what fits, and how the KV type changes it
@@ -353,6 +354,32 @@ except Exception:
         kv_measured "$_model" || die "$(basename "$_model") is not measured.
        Run first: ./scripts/assess.sh --measure"
         exec "$SCRIPT_DIR/assess.sh" --measure --speed --model "$_model"
+        ;;
+
+    identity)
+        # Correctness axis: speculative decoding is only a speed win if the
+        # output is the output. On CUDA, GGML_CUDA_BATCH_INVARIANT=1 makes the
+        # verify batch numerically identical to the serial path, so greedy text
+        # with the head is byte-identical to greedy text without it. Without
+        # the knob (and on Vulkan, which has no equivalent) a near-tie can flip
+        # a token late in an answer. This runs the same prompt both ways and
+        # compares, so "fastest" is never quoted without "correct".
+        load_settings
+        ensure_detect
+        _model="${1:-}"
+        if [ -z "$_model" ]; then
+            _first="$(find "$MODELS_DIR" -maxdepth 1 -name '*.gguf' \
+                -not -name '*mmproj*' -not -name 'kv-mean-center-*' 2>/dev/null | sort | head -1)"
+            [ -n "$_first" ] || die "No models in $MODELS_DIR. Run: ./scripts/get-models.sh"
+            _model="$_first"
+            dim "  Using $(basename "$_model"); pass a path to pick another."
+        fi
+        [ -f "$_model" ] || die "No such model: $_model"
+        if ! file_has_mtp_head "$_model"; then
+            die "$(basename "$_model") has no MTP head, so there is nothing to
+       compare against. Use an *-mtp.gguf."
+        fi
+        exec "$SCRIPT_DIR/assess.sh" --identity --model "$_model"
         ;;
 
     tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;

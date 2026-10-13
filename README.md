@@ -257,6 +257,7 @@ Everything goes through one command. You do not need to know systemd:
 ./scripts/bonsai speed      # quick tokens/sec check
 ./scripts/bonsai fastest    # every measured configuration on this backend, fastest first
 ./scripts/bonsai bench      # measure a model on this machine (writes its row)
+./scripts/bonsai identity   # is the MTP draft lossless on this backend?
 ./scripts/bonsai tune       # find the fastest settings on this machine
 ./scripts/bonsai assess     # what fits
 ./scripts/bonsai models     # what is installed
@@ -325,6 +326,27 @@ percent). The first two are applied for you:
 
 A number with no row behind it is never shown; run `bench` (or `--measure
 --speed`, or `--sweep`) to create the rows first.
+
+### Speed is one axis, not the whole answer
+
+`fastest` and `--tune` rank on tok/s but report two things that decide whether
+a number is *advice*:
+
+- **draft acceptance** — the share of drafted tokens the target model accepted.
+  Below **0.10** the verify passes cost more than the drafts save, so a weak
+  row is marked as such and a weak-draft variant is not allowed to take the
+  top slot in `--tune`. A spec type that prints no draft line at all (which is
+  what `ngram-*` does on the PrismML ternary models, issue #203) is reported
+  as **no drafts**, not as zero acceptance.
+- **losslessness** — `bonsai identity` runs the same greedy prompt with the
+  draft on and off and compares the text byte for byte. On CUDA
+  `GGML_CUDA_BATCH_INVARIANT=1` makes them identical; on Vulkan (which has no
+  equivalent) a near-tie can flip a token, which the check reports plainly.
+
+`--tune` also starts one server per variant instead of one per repetition
+(three reps inside a single load, median taken): the cache-type flags are
+start-time, so the old per-rep restarts bought the same measurement three
+times as slowly.
 
 ## Getting the most tokens per second
 

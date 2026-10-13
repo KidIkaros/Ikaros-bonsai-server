@@ -15,6 +15,8 @@
 #   ./scripts/assess.sh --measure --speed  also benchmark tokens per second
 #   ./scripts/assess.sh --sweep            split the model across VRAM and RAM,
 #                                          measuring tokens per second at each split
+#   ./scripts/assess.sh --identity [--model f]  is the MTP draft lossless on
+#                                          this backend? (the correctness axis)
 #   ./scripts/assess.sh --tune             try the settings that affect speed and
 #                                          report the fastest on this machine
 #
@@ -45,6 +47,8 @@ SWEEP_MODEL=""
 TUNE=0
 TUNE_TOKENS=64
 TUNE_MODEL=""
+IDENTITY=0
+IDENTITY_MODEL=""
 COVERAGE=0
 
 while [ $# -gt 0 ]; do
@@ -57,11 +61,12 @@ while [ $# -gt 0 ]; do
         --sweep)    SWEEP=1 ;;
         --sweep-tokens) SWEEP_TOKENS="${2:-64}"; shift ;;
         --sweep-levels) SWEEP_LEVELS="${2:-}"; shift ;;
-        --model)    SWEEP_MODEL="${2:-}"; TUNE_MODEL="${2:-}"; shift ;;
+        --model)    SWEEP_MODEL="${2:-}"; TUNE_MODEL="${2:-}"; IDENTITY_MODEL="${2:-}"; shift ;;
         --tune)     TUNE=1 ;;
+        --identity) IDENTITY=1 ;;
         --coverage) COVERAGE=1 ;;
         --tune-tokens) TUNE_TOKENS="${2:-64}"; shift ;;
-        -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
     shift
@@ -156,14 +161,20 @@ measure_kv() {
     info "measured $(basename "$_model"): ${_mib} MiB at 512 cells, ${_layers:-?} layers (${_bpc} bytes/cell)"
 }
 
-# bench_tps MODEL NGL CONTEXT KV TOKENS - run one generation, print tok/s.
+# bench_tps MODEL NGL CONTEXT KV TOKENS [REPS] - run one generation, print tok/s.
+# With REPS > 1 the server is started once and REPS generations run against it:
+# the cache-type flags are start-time, so every extra load bought nothing but
+# time. Prints the median, which is what a single depressed run cannot survive.
 # Prints nothing and fails if the server cannot start or produce a number.
 # Sets BENCH_ACCEPTANCE to the draft acceptance rate when the run used a spec
 # type, empty otherwise: the same tok/s at 0.05 acceptance means the drafts are
 # not landing, which is a different answer to "is this config fast".
 bench_tps() {
     _model="$1" _ngl="$2" _ctx="$3" _kv="$4" _tokens="$5"
-    shift 5
+    _reps="${6:-1}"
+    # Drop the leading five (or six) positionals; everything after them is the
+    # extra llama-server flags, passed through untouched.
+    if [ "$#" -ge 6 ]; then shift 6; else shift "$#"; fi
     _port="$BENCH_PORT"
     _log="$BENCH_LOG"
     BENCH_ACCEPTANCE=""
@@ -188,21 +199,32 @@ bench_tps() {
         # as "could not measure" instead of the real measurement.
         _model_id="$(first_model_id "http://127.0.0.1:$_port")"
         [ -n "$_model_id" ] || _model_id="$(basename "${_model%.gguf}")"
-        _resp="$(curl -s --max-time 300 "http://127.0.0.1:$_port/v1/chat/completions" \
-            -H 'Content-Type: application/json' \
-            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":%s,"temperature":0.7}' "$_model_id" "$_tokens")" \
-            2>/dev/null || true)"
-        _tps="$(printf '%s' "$_resp" | python3 -c '
+        _runs=""
+        _rep=1
+        while [ "$_rep" -le "$_reps" ]; do
+            # The first generation also loads the model, so it is not a fair
+            # timing sample; every rep but the first is steady state.
+            _resp="$(curl -s --max-time 300 "http://127.0.0.1:$_port/v1/chat/completions" \
+                -H 'Content-Type: application/json' \
+                -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":%s,"temperature":0.7}' "$_model_id" "$_tokens")" \
+                2>/dev/null || true)"
+            _one="$(printf '%s' "$_resp" | python3 -c '
 import json, sys
 try:
     print(round(json.load(sys.stdin).get("timings", {}).get("predicted_per_second", 0), 1))
 except Exception:
     pass
 ' 2>/dev/null || true)"
+            [ -n "$_one" ] && _runs="${_runs}${_one}
+"
+            _rep=$((_rep + 1))
+        done
+        _tps="$(printf '%s' "$_runs" | grep -v '^[[:space:]]*$' | sort -g |
+            awk '{ v[NR] = $1 } END { if (NR == 0) exit 1; print v[int((NR + 1) / 2)] }')"
     fi
 
-    # The acceptance line lands in the log once the generation finishes, so
-    # read it after the request, not while it runs.
+    # The acceptance line lands in the log once the generations finish, so
+    # read it after the requests, not while they run.
     BENCH_ACCEPTANCE="$(log_draft_acceptance "$_log" || true)"
 
     kill "$_pid" 2>/dev/null || true
@@ -415,24 +437,24 @@ if [ "$TUNE" = 1 ]; then
 
         BENCH_PORT=$((BONSAI_PORT + 203))
         BENCH_LOG="$STATE_DIR/assess-tune.log"
-        # Three runs, median taken. A single run is easily depressed by anything
-        # else touching the GPU, and that was enough to flip a close ranking.
-        _runs=""
-        for _rep in 1 2 3; do
-            # shellcheck disable=SC2086
-            _one="$(bench_tps "$TUNE_PATH" "$_ngl" "$CONTEXT" "$_kv" "$TUNE_TOKENS" $_extra || true)"
-            _runs="${_runs}${_one}
-"
-        done
-        _tps="$(printf '%s' "$_runs" | grep -v '^[[:space:]]*$' | sort -g | awk '{ v[NR] = $1 } END { if (NR == 0) exit 1; print v[int((NR + 1) / 2)] }')"
+        # One server start, three generations against it, median taken. A
+        # single run is easily depressed by anything else touching the GPU,
+        # and that was enough to flip a close ranking - but the cache-type
+        # flags are start-time, so three starts measured the same thing
+        # three times as slowly. Three reps inside one load is the same
+        # statistics for a third of the wall time.
+        # shellcheck disable=SC2086
+        _tps="$(bench_tps "$TUNE_PATH" "$_ngl" "$CONTEXT" "$_kv" "$TUNE_TOKENS" 3 $_extra || true)"
+        _acc="${BENCH_ACCEPTANCE:-}"
 
         if [ -z "$_tps" ]; then
             printf '  %-34s %8s  failed\n' "$_label" "-"
             explain_bench_failure "$BENCH_LOG"
             return 0
         fi
-        printf '  %-34s %6s tok/s\n' "$_label" "$_tps"
-        printf '%s\t%s\t%s\t%s\n' "$_tps" "$_label" "$_kv" "$_env" >> "$_results"
+        printf '  %-34s %6s tok/s%s\n' "$_label" "$_tps" \
+            "${_acc:+ (draft $(acceptance_verdict "$_acc"), $_acc)}"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$_tps" "$_label" "$_kv" "$_env" "$_acc" >> "$_results"
         coverage_set kv "$_kv"
         coverage_set backend "${BACKEND:-unknown}"
         coverage_set context "$CONTEXT"
@@ -505,11 +527,18 @@ if [ "$TUNE" = 1 ]; then
     fi
 
     _base="$(awk -F'\t' '$2 ~ /default/ { print $1; exit }' "$_results")"
-    _best="$(sort -rn "$_results" | head -1)"
+    # Rank on tok/s, but a winner whose drafts are not landing is not a winner:
+    # below 0.10 the verify passes cost more than they save, so a weak-draft
+    # variant is excluded from the top slot rather than reported as fastest.
+    _ranked="$(sort -t"$(printf '\t')" -k1,1rn "$_results" |
+        awk -F'\t' '$5 == "" || $5 + 0 >= 0.10')"
+    _best="$(printf '%s\n' "$_ranked" | head -1)"
+    [ -n "$_best" ] || _best="$(sort -rn "$_results" | head -1)"
 
     _btps="$(printf '%s' "$_best" | cut -f1)"
     _blabel="$(printf '%s' "$_best" | cut -f2)"
     _benv="$(printf '%s' "$_best" | cut -f4)"
+    _bacc="$(printf '%s' "$_best" | cut -f5)"
 
     # Persist the measured winner so `bonsai apply` can project it onto the
     # settings file. apply_tune_best keeps the machine-level knobs (NGL,
@@ -519,9 +548,9 @@ if [ "$TUNE" = 1 ]; then
         dim "  Winner recorded to $TUNE_BEST_FILE (run ./scripts/bonsai apply to persist it)."
     fi
 
-    printf '  %-38s %8s %9s  %s\n' "fastest first" "tok/s" "vs now" "verdict"
-    printf '  %s\n' "----------------------------------------------------------------------"
-    sort -rn "$_results" | while IFS=$'\t' read -r _t _l _k _e; do
+    printf '  %-38s %8s %9s %10s  %s\n' "fastest first" "tok/s" "vs now" "draft" "verdict"
+    printf '  %s\n' "--------------------------------------------------------------------------------------"
+    sort -rn "$_results" | while IFS=$'\t' read -r _t _l _k _e _acc; do
         _rel=""
         _verdict=""
         if [ -n "$_base" ]; then
@@ -534,7 +563,13 @@ if [ "$TUNE" = 1 ]; then
                 _verdict="same as now"
             fi
         fi
-        printf '  %-38s %8s %9s  %s\n' "$_l" "$_t" "$_rel" "$_verdict"
+        # A variant whose drafts are not landing is called out rather than
+        # ranked as merely fast: the tok/s is real, the lever is not paying.
+        if [ -n "$_acc" ] && awk -v a="$_acc" 'BEGIN { exit !(a < 0.10) }'; then
+            _verdict="$_verdict; drafts not landing"
+        fi
+        printf '  %-38s %8s %9s %10s  %s\n' "$_l" "$_t" "$_rel" \
+            "${_acc:-none}" "$_verdict"
     done
 
     echo ""
@@ -544,7 +579,7 @@ if [ "$TUNE" = 1 ]; then
     if [ "$_blabel" = "q8_0 KV, ubatch 512 (default)" ]; then
         info "The current default is already the fastest of these on this machine."
     else
-        info "Fastest: $_blabel at ${_btps} tok/s."
+        info "Fastest: $_blabel at ${_btps} tok/s${_bacc:+ (draft acceptance $_bacc)}."
     fi
 
     # Only call it a win if it clears the run-to-run noise we see in practice.
@@ -560,6 +595,126 @@ if [ "$TUNE" = 1 ]; then
         fi
     fi
     echo ""
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Identity: is the speculative draft lossless on this backend?
+# ---------------------------------------------------------------------------
+
+# greedy_text MODEL PORT EXTRA... - one greedy generation, printed raw.
+# No spec flags, so this is the reference path.
+greedy_text() {
+    _g_model="$1" _g_port="$2"; shift 2
+    local _id
+    _id="$(first_model_id "http://127.0.0.1:$_g_port")"
+    [ -n "$_id" ] || _id="$(basename "${_g_model%.gguf}")"
+    curl -s --max-time 300 "http://127.0.0.1:$_g_port/v1/chat/completions" \
+        -H 'Content-Type: application/json' \
+        -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Explain in about 150 words why speculative decoding with a multi-token prediction head can be lossless under greedy decoding."}],"max_tokens":300,"temperature":0,"top_k":1}' "$_id")" \
+        2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["choices"][0]["message"]["content"])
+except Exception:
+    pass
+'
+}
+
+# run_identity MODEL - print the two texts and their verdict.
+# The reference run has no spec flags; the draft run uses draft-mtp at the
+# backend-tuned window. Byte-identical means lossless on this backend.
+run_identity() {
+    _id_model="$1"
+    _id_ctx="${2:-$CONTEXT}"
+    _id_kv="${3:-$KV_TYPE}"
+
+    step "Identity check"
+    info "Model   : $(basename "$_id_model")"
+    info "Backend : $BACKEND"
+    if [ "$BACKEND" = "cuda" ]; then
+        dim "  GGML_CUDA_BATCH_INVARIANT=1 makes the verify batch numerically"
+        dim "  identical to the serial path; without it a near-tie can flip a token."
+    else
+        dim "  $BACKEND has no batch-invariance knob: a near-tie can flip a"
+        dim "  token, so expect divergence here even on a correct build."
+    fi
+    echo ""
+
+    _id_nmax="$(spec_nmax_for "$BACKEND")"
+    if [ "$_id_nmax" = "0" ]; then
+        warn "This backend runs no drafting ($BACKEND), so there is nothing to compare."
+        return 0
+    fi
+
+    local _p1=$((BONSAI_PORT + 211)) _p2=$((BONSAI_PORT + 212))
+    local _l1="$STATE_DIR/identity-off.log" _l2="$STATE_DIR/identity-on.log"
+
+    dim "  Reference run (no drafts)..."
+    "$SERVER_BIN" -m "$_id_model" --port "$_p1" --ctx-size "$_id_ctx" \
+        --cache-type-k "$_id_kv" --cache-type-v "$_id_kv" \
+        --n-gpu-layers "$BONSAI_NGL" --no-warmup --jinja >"$_l1" 2>&1 &
+    local _r1=$!
+    for _ in $(seq 1 120); do
+        curl -sf --max-time 5 "http://127.0.0.1:$_p1/health" >/dev/null 2>&1 && break
+        kill -0 "$_r1" 2>/dev/null || break
+        sleep 1
+    done
+    local _off
+    _off="$(greedy_text "$_id_model" "$_p1")"
+    kill "$_r1" 2>/dev/null || true; wait "$_r1" 2>/dev/null || true
+
+    dim "  Draft run (draft-mtp, n-max $_id_nmax)..."
+    "$SERVER_BIN" -m "$_id_model" --port "$_p2" --ctx-size "$_id_ctx" \
+        --cache-type-k "$_id_kv" --cache-type-v "$_id_kv" \
+        --n-gpu-layers "$BONSAI_NGL" --no-warmup --jinja \
+        --spec-type draft-mtp --spec-draft-n-max "$_id_nmax" >"$_l2" 2>&1 &
+    local _r2=$!
+    for _ in $(seq 1 120); do
+        curl -sf --max-time 5 "http://127.0.0.1:$_p2/health" >/dev/null 2>&1 && break
+        kill -0 "$_r2" 2>/dev/null || break
+        sleep 1
+    done
+    local _on
+    _on="$(greedy_text "$_id_model" "$_p2")"
+    kill "$_r2" 2>/dev/null || true; wait "$_r2" 2>/dev/null || true
+
+    echo ""
+    if [ -z "$_off" ] || [ -z "$_on" ]; then
+        warn "One of the two runs produced no text; see $_l1 / $_l2"
+        return 1
+    fi
+
+    local _off_sha _on_sha _acc
+    _off_sha="$(printf '%s' "$_off" | sha256sum | cut -d' ' -f1)"
+    _on_sha="$(printf '%s' "$_on" | sha256sum | cut -d' ' -f1)"
+    _acc="$(log_draft_acceptance "$_l2" || true)"
+
+    printf '  %-22s %s\n' "reference (no draft)" "${_off_sha:0:16}"
+    printf '  %-22s %s\n' "draft-mtp n-max $_id_nmax" "${_on_sha:0:16}${_acc:+ (acceptance $_acc)}"
+    echo ""
+    if [ "$_off_sha" = "$_on_sha" ]; then
+        info "Byte-identical: the draft is lossless on this backend."
+    else
+        warn "The texts differ: a near-tie flipped a token somewhere."
+        dim "  That is expected on $BACKEND without a batch-invariance mode."
+        dim "  The text stays clean; only exact reproducibility is lost."
+    fi
+    echo ""
+    dim "  Full outputs: $_STATE_DIR/identity-off.txt / identity-on.txt"
+    printf '%s' "$_off" > "$STATE_DIR/identity-off.txt"
+    printf '%s' "$_on" > "$STATE_DIR/identity-on.txt"
+}
+
+if [ "$IDENTITY" = 1 ]; then
+    if [ -n "${IDENTITY_MODEL:-}" ]; then
+        IDENTITY_PATH="$IDENTITY_MODEL"
+        [ -f "$IDENTITY_PATH" ] || die "No such model: $IDENTITY_PATH"
+    else
+        IDENTITY_PATH="${MODELS[0]:-}"
+        [ -n "$IDENTITY_PATH" ] || die "No models in $MODELS_DIR. Run: ./scripts/get-models.sh"
+    fi
+    run_identity "$IDENTITY_PATH" "$CONTEXT" "$KV_TYPE"
     exit 0
 fi
 

@@ -878,6 +878,73 @@ assert_eq "a legacy row without acceptance is empty" "" \
     "$(_sa_probe cuda 'speed_rows cuda' | awk -F'\t' '$1 == "old.gguf" { print $8 }')"
 rm -rf "$_sa"
 
+group "tune ranking with acceptance"
+
+# The tune results file gains a fifth column (draft acceptance), and a winner
+# whose drafts are not landing must not take the top slot: the ranking filter
+# keeps only rows with no acceptance recorded or acceptance >= 0.10, and falls
+# back to the raw ranking when every row is weak.
+_tr="$(mktemp -d)"
+cat > "$_tr/tune-results.tsv" <<'TSV'
+46.1	default q8_0	q8_0	BONSAI_KV_TYPE=q8_0	0.74
+48.9	draft-mtp n-max 1	q8_0	BONSAI_SPEC_TYPE=draft-mtp BONSAI_SPEC_DRAFT_N_MAX=1	0.03
+44.0	f16 KV	q8_0	BONSAI_KV_TYPE=f16	
+TSV
+_ranked() {
+    sort -t"$(printf '\t')" -k1,1rn "$_tr/tune-results.tsv" |
+        awk -F'\t' '$5 == "" || $5 + 0 >= 0.10'
+}
+assert_eq "a weak-draft row is excluded from the top" \
+    "46.1" "$(printf '%s\n' "$(_ranked)" | head -1 | cut -f1)"
+assert_eq "the strongest acceptable row is picked, not the fastest" \
+    "default q8_0" "$(printf '%s\n' "$(_ranked)" | head -1 | cut -f2)"
+assert_eq "a row with no acceptance stays in the ranking" \
+    "2" "$(printf '%s\n' "$(_ranked)" | grep -c '^')"
+# When every row is weak, the fallback keeps the raw fastest so the report
+# still names something rather than printing nothing.
+cat > "$_tr/tune-results.tsv" <<'TSV'
+48.9	draft-mtp n-max 1	q8_0	BONSAI_SPEC_TYPE=draft-mtp	0.03
+46.1	default q8_0	q8_0	BONSAI_KV_TYPE=q8_0	0.02
+TSV
+if [ -z "$(printf '%s\n' "$(_ranked)" | head -1)" ]; then
+    pass "an all-weak ranking falls back to the raw fastest"
+else
+    fail "an all-weak ranking should fall back"
+fi
+rm -rf "$_tr"
+
+group "identity check"
+
+# The correctness axis: a speed row is not advice unless the output is the
+# output. The command must exist, refuse a model with no head, and be
+# documented in help and the README.
+if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai identity"; then
+    pass "bonsai help documents identity"
+else
+    fail "bonsai help should document 'bonsai identity'"
+fi
+if grep -q -- '--identity' "$SCRIPTS/assess.sh"; then
+    pass "assess.sh implements --identity"
+else
+    fail "assess.sh should implement --identity"
+fi
+# A model without an MTP head has nothing to compare, so the command must say
+# so rather than silently comparing a model against itself.
+_id_dir="$(mktemp -d)"
+touch "$_id_dir/plain-model.gguf" "$_id_dir/some-mtp.gguf"
+if BONSAI_STATE_DIR="$_id_dir/state" BONSAI_MODELS_DIR="$_id_dir" \
+        "$SCRIPTS/bonsai" identity "$_id_dir/plain-model.gguf" >/dev/null 2>&1; then
+    fail "identity should refuse a model with no MTP head"
+else
+    pass "identity refuses a model with no MTP head"
+fi
+if file_has_mtp_head "$_id_dir/some-mtp.gguf"; then
+    pass "an *-mtp.gguf is accepted for the identity check"
+else
+    fail "an *-mtp.gguf should be accepted"
+fi
+rm -rf "$_id_dir"
+
 # The bench row names every input so it can be reproduced or contested.
 _r="$(bench_row "RTX 2070" cuda prism-b10772-e8fd209 "m-lean.gguf" 36 q4_0 65536 "draft-mtp n-max 1" 46.1)"
 assert_contains "bench row names the card" "$_r" "RTX 2070"
