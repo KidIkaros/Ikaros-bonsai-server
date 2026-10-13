@@ -1083,6 +1083,114 @@ else
     fail "README should reference docs/SPEED-BEYOND-MTP-2026-10.md"
 fi
 
+group "documentation coverage"
+
+# The README env table is the contract for what a user may set. Every var the
+# scripts consume that is user-facing must be in it; anything in the table must
+# actually be read somewhere (a documented-but-dead var is a false claim).
+#
+# Internal vars are excluded by name: the BONSAI_FAKE_* test hooks, the
+# tune-result keys the scripts write rather than read, the install-time paths
+# that are not server settings, and the source-build overrides only a
+# contributor building llama.cpp from source would set.
+_doc_internal="BONSAI_FAKE_ BONSAI_FROM_ENV BONSAI_SETTINGS BONSAI_TUNED_AT BONSAI_TUNED_BACKEND BONSAI_STATE_DIR BONSAI_PREFIX BONSAI_SRC_DIR BONSAI_SRC_FORCE"
+
+_doc_table() {
+    # From the "Environment variables" section onward, take the first column
+    # of each row. Anchored on the section heading so an earlier table (the
+    # hardware-guidance one) cannot leak in.
+    #
+    # The row "`BONSAI_KV_TYPE_K` / `_V`" documents two vars in one cell; the
+    # `_V` shorthand expands to BONSAI_KV_TYPE_V, so it is listed explicitly
+    # rather than left to read as undocumented.
+    sed -n '/^## Environment variables/,$p' "$REPO_ROOT/README.md" |
+        grep -E '^\| `[A-Z_]+' |
+        sed -n 's/^| `\([A-Z_]*\)`.*/\1/p' |
+        sed 's|^BONSAI_KV_TYPE_K$|BONSAI_KV_TYPE_K\nBONSAI_KV_TYPE_V|' |
+        sort -u
+}
+
+_doc_tmp="$(mktemp -d)"
+_doc_table > "$_doc_tmp/table"
+# Direction 1: every documented var must appear somewhere in the scripts.
+: > "$_doc_tmp/filtered"
+while IFS= read -r _v; do
+    _skip=0
+    for _i in $_doc_internal; do
+        case "$_v" in "$_i"*) _skip=1 ;; esac
+    done
+    if [ "$_skip" = 0 ] && grep -rqF "$_v" "$SCRIPTS" "$REPO_ROOT/setup.sh" \
+            "$REPO_ROOT/install.sh" 2>/dev/null; then
+        printf '%s\n' "$_v" >> "$_doc_tmp/filtered"
+    fi
+done < "$_doc_tmp/table"
+# Direction 2: every user-facing BONSAI_ var the scripts read must be in the table.
+grep -rhoE 'BONSAI_[A-Z_]+' "$SCRIPTS"/*.sh "$SCRIPTS"/lib/*.sh \
+    "$REPO_ROOT/setup.sh" "$REPO_ROOT/install.sh" 2>/dev/null | sort -u > "$_doc_tmp/all_used"
+: > "$_doc_tmp/missing"
+while IFS= read -r _v; do
+    _skip=0
+    for _i in $_doc_internal; do
+        case "$_v" in "$_i"*) _skip=1 ;; esac
+    done
+    if [ "$_skip" = 0 ] && ! grep -qxF "$_v" "$_doc_tmp/table"; then
+        printf '%s\n' "$_v" >> "$_doc_tmp/missing"
+    fi
+done < "$_doc_tmp/all_used"
+
+_doc_missing="$(cat "$_doc_tmp/missing")"
+if [ -z "$_doc_missing" ]; then
+    pass "every user-facing BONSAI_ var is documented"
+else
+    fail "undocumented vars:" "$(printf '%s' "$_doc_missing" | tr '\n' ' ')"
+fi
+_doc_dead="$(comm -23 "$_doc_tmp/table" "$_doc_tmp/filtered")"
+if [ -z "$_doc_dead" ]; then
+    pass "no documented var is dead"
+else
+    fail "documented but never read:" "$(printf '%s' "$_doc_dead" | tr '\n' ' ')"
+fi
+rm -rf "$_doc_tmp"
+
+# The requirements section must not claim Python is absent when the default
+# path shells out to python3 - the claim is what a new user plans around.
+if grep -q "python3" "$SCRIPTS/bonsai" "$SCRIPTS/assess.sh" 2>/dev/null; then
+    if grep -qE "No compiler, no Python" "$REPO_ROOT/README.md"; then
+        fail "README claims no Python but the default path uses python3"
+    else
+        pass "the Python requirement is stated honestly"
+    fi
+else
+    pass "no python3 on the default path"
+fi
+
+# Every README anchor into docs/ must name a heading that exists: a link that
+# 404s reads as a missing section. GitHub slugs are the heading lowercased with
+# punctuation stripped and spaces as hyphens.
+_doc_anchor_ok=1
+_doc_anchor_bad=""
+while IFS= read -r _link; do
+    _file="${_link%%#*}"
+    _frag="${_link#*#}"
+    [ "$_file" != "$_link" ] || continue          # no fragment, skip
+    [ -f "$REPO_ROOT/$_file" ] || continue
+    _slug="$(grep -E '^#{1,6} ' "$REPO_ROOT/$_file" |
+        sed 's/^#* //' | tr '[:upper:]' '[:lower:]' |
+        sed 's/[^a-z0-9 -]//g' | sed 's/ /-/g')"
+    printf '%s\n' "$_slug" | grep -qxF "$_frag" || {
+        _doc_anchor_ok=0
+        _doc_anchor_bad="$_doc_anchor_bad $_link"
+    }
+done <<EOF
+$(grep -ohE '\]\(([^)]+\.md#[^)]+)\)' "$REPO_ROOT/README.md" "$REPO_ROOT"/docs/*.md 2>/dev/null |
+    sed 's/](\(.*\))/\1/')
+EOF
+if [ "$_doc_anchor_ok" = 1 ]; then
+    pass "every doc anchor resolves to a real heading"
+else
+    fail "broken doc anchors:" "$_doc_anchor_bad"
+fi
+
 group "first-run guidance (discoverability)"
 
 # A first-time user hits `fastest` before any measurement exists. That state

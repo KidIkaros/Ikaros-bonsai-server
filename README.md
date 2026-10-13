@@ -71,8 +71,10 @@ downloading PrismML's official prebuilt binaries.
 
 - Linux x86_64 or arm64 (Windows is not supported yet)
 - `curl` or `wget`, and `git`
+- `python3` for the JSON in `status`, `speed` and `assess` (no third-party
+  packages; any Python 3 works). Everything else is plain shell.
 - About 3 GB of disk for the binary plus whatever your chosen model needs
-- **Nothing else for the default path.** No compiler, no Python, no Node.
+- **Nothing else for the default path.** No compiler, no Node, no pip install.
 
 Rough hardware guidance:
 
@@ -483,12 +485,18 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | `BONSAI_CTX` | `65536` | context size |
 | `BONSAI_NGL` | `99` | GPU layers |
 | `BONSAI_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
-| `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
+| `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently; `_V` alone quantizes only the value cache (measured near-lossless, unlike quantizing K) |
 | `BONSAI_MODELS_DIR` | `./models` | where models are stored |
+| `BONSAI_THREADS` | all logical cores | CPU threads; measured as noise under full GPU offload, the largest lever on CPU-only or partial-offload |
+| `BONSAI_EXTRA_ARGS` | unset | extra `llama-server` flags, e.g. `--ubatch-size 256` |
+| `BONSAI_SPEC_DRAFT_P_MIN` | `0.0` | draft probability floor (disabled); `0.8` lets deeper `n-max` pay off on some hardware |
+| `BONSAI_START_TIMEOUT` | `120` | seconds to wait for the server to become healthy; raise it for a slow first load |
 | `BONSAI_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
 | `BONSAI_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` (auto-enabled when one is installed); `none` to disable |
 | `BONSAI_SPEC_STACK` | `bonsai` | `upstream` keeps llama.cpp's default `ngram-mod` alongside the chosen type; `bonsai` removes it first (it no-ops on the ternary models) |
 | `BONSAI_SPEC_DRAFT_N_MAX` | `1` | tokens to draft; 2 measured slower on a stock build |
+| `BONSAI_KV_BIAS_OUT` | `models/kv-mean-center-<model>.gguf` | where `make-kv-bias.sh` writes the bias file |
+| `BONSAI_CALIB_TOKENS` | `400` | tokens the model generates per seed prompt when building a KV bias |
 | `BONSAI_MOE_CACHE_MIB` | unset | GPU cache for CPU-resident MoE experts, `+1.5-1.85x` decode (needs a source build; the pinned prebuilt lacks the flag) |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
