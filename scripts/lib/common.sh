@@ -47,7 +47,9 @@ BONSAI_NGL="${BONSAI_NGL:-99}"
 # BONSAI_KV_TYPE sets both halves; BONSAI_KV_TYPE_K / _V override one half.
 # They stay empty here so that --kv-type on the command line still composes.
 # Always resolve through kv_type_k / kv_type_v, never the raw variables.
-BONSAI_KV_TYPE="${BONSAI_KV_TYPE:-q8_0}"
+# "auto" picks f16 when the largest installed model still fits with it, and
+# q8_0 otherwise. Resolved at start time, so it adapts as models are added.
+BONSAI_KV_TYPE="${BONSAI_KV_TYPE:-auto}"
 BONSAI_KV_TYPE_K="${BONSAI_KV_TYPE_K:-}"
 BONSAI_KV_TYPE_V="${BONSAI_KV_TYPE_V:-}"
 
@@ -357,6 +359,56 @@ free_vram_gb() {
 # model_size_bytes MODEL - file size, or 0.
 model_size_bytes() {
     stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || echo 0
+}
+
+# kv_type_auto - pick the fastest KV type that still fits the machine.
+#
+# f16 is measurably faster than q8_0 but needs 1.87x the cache, so it is only
+# the right default when the largest installed model still fits with it. The
+# largest model is the binding constraint: if it fits, everything does.
+kv_type_auto() {
+    local _largest _w_gb _kv_gb _budget
+
+    _largest="$(find "$MODELS_DIR" -name '*.gguf' \
+        -not -name '*mmproj*' -not -name 'kv-mean-center-*' -not -name '*dspark*' \
+        2>/dev/null | while IFS= read -r _f; do
+            printf '%s\t%s\n' "$(model_size_bytes "$_f")" "$_f"
+        done | sort -rn | head -1 | cut -f2)"
+
+    # Without a measurement we cannot price the cache, so take the safe option.
+    [ -n "$_largest" ] || { printf 'q8_0'; return 0; }
+    kv_measured "$_largest" 2>/dev/null || { printf 'q8_0'; return 0; }
+
+    _budget="$(kv_budget_gb)" || { printf 'q8_0'; return 0; }
+    _w_gb="$(awk -v b="$(model_size_bytes "$_largest")" 'BEGIN { printf "%.2f", b/1073741824 }')"
+
+    for _t in f16 q8_0; do
+        _kv_gb="$(kv_mib "$_largest" "$BONSAI_CTX" "$_t" 2>/dev/null |
+            awk '{ printf "%.2f", $1/1024 }')"
+        [ -n "$_kv_gb" ] || continue
+        if awk -v w="$_w_gb" -v k="$_kv_gb" -v b="$_budget" 'BEGIN { exit !(w + k <= b) }'; then
+            printf '%s' "$_t"; return 0
+        fi
+    done
+    printf 'q8_0'
+}
+
+# kv_type_resolve - replace a configured "auto" with a concrete type, in place.
+# Any entry point that needs the effective type must call this first, otherwise
+# it sees the literal string "auto" and fails validation.
+kv_type_resolve() {
+    [ "${BONSAI_KV_TYPE:-}" = "auto" ] || return 0
+    BONSAI_KV_TYPE="$(kv_type_auto)"
+}
+
+# kv_budget_gb - memory the models may use, with headroom held back.
+kv_budget_gb() {
+    local _gb _reserve
+    if [ "${BACKEND:-cpu}" = "cpu" ]; then _gb="$RAM_GB"; _reserve=2
+    else _gb="$VRAM_GB"; _reserve=1
+    fi
+    [ "${_gb:-0}" -gt 0 ] 2>/dev/null || return 1
+    printf '%s' "$((_gb - _reserve))"
 }
 
 # ---------------------------------------------------------------------------

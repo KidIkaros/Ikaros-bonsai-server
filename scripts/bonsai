@@ -226,7 +226,11 @@ except Exception:
             BONSAI_CTX|BONSAI_PORT|BONSAI_NGL)
                 case "$VAL" in ''|*[!0-9]*) die "$KEY needs a number, got '$VAL'." ;; esac ;;
             BONSAI_KV_TYPE)
-                kv_type_valid "$VAL" || die "Unknown KV cache type '$VAL'. Allowed: $KV_CACHE_TYPES" ;;
+                case "$VAL" in
+                    auto) ;;
+                    *) kv_type_valid "$VAL" ||
+                        die "Unknown KV cache type '$VAL'. Allowed: auto, $KV_CACHE_TYPES" ;;
+                esac ;;
         esac
 
         mkdir -p "$STATE_DIR"

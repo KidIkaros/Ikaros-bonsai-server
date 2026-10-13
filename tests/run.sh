@@ -276,7 +276,13 @@ for _t in bogus q3_weird "" q4_2; do
 done
 
 # Resolution: the default, an override, an asymmetric pair, and off.
-assert_eq "default KV type" "q8_0" "$(kv_type_effective)"
+assert_eq "the configured default is auto" "auto" "$BONSAI_KV_TYPE"
+# With no models to price, auto resolves to the safe option.
+(
+    BONSAI_KV_TYPE=auto
+    kv_type_resolve
+    assert_eq "auto resolves to a concrete type" "q8_0" "$BONSAI_KV_TYPE"
+)
 (
     BONSAI_KV_TYPE=q4_0
     # shellcheck disable=SC2034
@@ -434,6 +440,63 @@ speed_set "fake-model.gguf" 65536 q8_0 "200.0"
 assert_eq "re-benchmarking replaces the speed" "1" "$(grep -c 'fake-model' "$SPEED_CACHE")"
 assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
 
+rm -rf "$_tmpdir"
+
+group "auto KV type"
+
+# kv_type_auto picks the fastest type that still fits the largest installed
+# model. Exercise it against a controlled models dir and budget.
+_tmpdir="$(mktemp -d)"
+_old_state="$STATE_DIR"
+STATE_DIR="$_tmpdir"
+KV_COST_CACHE="$_tmpdir/kv-costs.tsv"
+SETTINGS_FILE="$_tmpdir/service.env"
+_BONSAI_FROM_ENV=""
+_old_models="$MODELS_DIR"
+# Detection is not loaded in the test context, so these may be unset.
+_old_vram="${VRAM_GB:-}"
+_old_ram="${RAM_GB:-}"
+_old_backend="${BACKEND:-}"
+
+# 147456 bytes/cell is the real 8B measurement, so the arithmetic matches hardware.
+MODELS_DIR="$_tmpdir/models"
+mkdir -p "$MODELS_DIR"
+# A sparse file of the right size: the weight size is what decides the verdict,
+# so an empty file would make every configuration look like it fits.
+truncate -s 2G "$MODELS_DIR/small-2gb.gguf"
+
+kv_cost_set "small-2gb.gguf" "147456.0000" "36"
+BACKEND=rocm; VRAM_GB=15; RAM_GB=31
+# f16 KV at 65536 is 9216 MiB = 9.0 GB; 2.0 + 9.0 = 11.0 GB against a 14 GB budget.
+# 2.0 GB of weights + 9.0 GB of f16 cache = 11.0 GB, inside the 14 GB budget.
+assert_eq "f16 when the model fits with it" "f16" "$(kv_type_auto)"
+
+# The same model against a budget too small for the f16 cache must fall back.
+VRAM_GB=10   # budget 9 GB: f16 needs 11.0, q8_0 needs 6.8
+assert_eq "q8_0 when f16 would not fit" "q8_0" "$(kv_type_auto)"
+
+# An unmeasured model cannot be priced, so take the safe option.
+VRAM_GB=15
+rm -f "$KV_COST_CACHE"
+assert_eq "q8_0 when the model is unmeasured" "q8_0" "$(kv_type_auto)"
+
+# No models at all is also the safe option.
+kv_cost_set "small-2gb.gguf" "147456.0000" "36"
+rm -f "$MODELS_DIR"/*.gguf
+assert_eq "q8_0 when no models are installed" "q8_0" "$(kv_type_auto)"
+
+assert_eq "budget holds back headroom on a GPU" "14" \
+    "$(BACKEND=rocm VRAM_GB=15 RAM_GB=31 kv_budget_gb)"
+assert_eq "and more headroom on CPU" "29" \
+    "$(BACKEND=cpu VRAM_GB=15 RAM_GB=31 kv_budget_gb)"
+
+MODELS_DIR="$_old_models"
+[ -n "$_old_vram" ] && VRAM_GB="$_old_vram"
+[ -n "$_old_ram" ] && RAM_GB="$_old_ram"
+[ -n "$_old_backend" ] && BACKEND="$_old_backend"
+STATE_DIR="$_old_state"
+KV_COST_CACHE="$STATE_DIR/kv-costs.tsv"
+SETTINGS_FILE="$STATE_DIR/service.env"
 rm -rf "$_tmpdir"
 
 group "settings file"

@@ -73,6 +73,10 @@ if detect_is_stale; then
 fi
 load_detect
 
+# "auto" needs the measurements and the budget, so resolve it before anything
+# validates the value.
+kv_type_resolve
+
 SERVER_BIN="$(llama_server_bin)" || die "No llama-server installed. Run: ./scripts/fetch-binary.sh"
 
 # ---------------------------------------------------------------------------

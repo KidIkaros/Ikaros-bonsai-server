@@ -89,7 +89,8 @@ llama_server_bin >/dev/null || die "No llama-server installed. Run: ./scripts/fe
 KV_TYPE_K="$(kv_type_k)"
 KV_TYPE_V="$(kv_type_v)"
 for _t in "$KV_TYPE_K" "$KV_TYPE_V"; do
-    kv_type_valid "$_t" || die "Unknown KV cache type '$_t'. Allowed: $KV_CACHE_TYPES"
+    [ "$_t" = "auto" ] && continue   # resolved at start time
+    kv_type_valid "$_t" || die "Unknown KV cache type '$_t'. Allowed: auto, $KV_CACHE_TYPES"
 done
 
 # All settings live in one editable file. The unit reads it through
@@ -107,7 +108,7 @@ SETTINGS_TMP="$SETTINGS_FILE.tmp"
     printf 'BONSAI_PORT=%s\n' "$BONSAI_PORT"
     printf 'BONSAI_CTX=%s\n' "$BONSAI_CTX"
     printf 'BONSAI_NGL=%s\n' "$BONSAI_NGL"
-    printf 'BONSAI_KV_TYPE=%s\n' "$(kv_type_effective)"
+    printf 'BONSAI_KV_TYPE=%s\n' "${BONSAI_KV_TYPE:-auto}"
     printf 'BONSAI_MODELS_DIR=%s\n' "$MODELS_DIR"
 } > "$SETTINGS_TMP"
 mv "$SETTINGS_TMP" "$SETTINGS_FILE"

@@ -95,6 +95,13 @@ fi
 
 # Validate the KV cache types before starting, so a typo fails here with the
 # allowed list rather than deep inside llama-server.
+# Resolve "auto" now that detection and the measurements are available.
+if [ "$BONSAI_KV_TYPE" = "auto" ]; then
+    _auto_reason="fastest type that fits the largest installed model"
+    _auto_note=1
+fi
+kv_type_resolve
+
 KV_TYPE_K="$(kv_type_k)"
 KV_TYPE_V="$(kv_type_v)"
 for _t in "$KV_TYPE_K" "$KV_TYPE_V"; do
@@ -139,7 +146,11 @@ printf '  %s\n' "${C_DIM}${CMD[*]}${C_RESET}"
 echo ""
 info "Backend     : $BACKEND"
 info "Models dir  : $MODELS_DIR  ($_gguf_count file(s))"
-info "KV cache    : $(kv_type_effective)"
+if [ -n "${_auto_note:-}" ]; then
+    info "KV cache    : $(kv_type_effective)  (auto: $_auto_reason)"
+else
+    info "KV cache    : $(kv_type_effective)"
+fi
 if [ "$KV_TYPE_K" = "q4_0" ] || [ "$KV_TYPE_V" = "q4_0" ]; then
     dim "  q4_0 is the smallest option but costs some quality."
     dim "  --kv-mean-center improves q4_0 K quality; see docs/HARDWARE.md."
