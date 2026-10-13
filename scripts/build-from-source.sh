@@ -53,7 +53,7 @@ load_detect
 PATCH="$REPO_ROOT/patches/0001-speedlog-ema-tps.patch"
 [ -f "$PATCH" ] || die "Patch not found: $PATCH"
 
-SRC_DIR="${BONSAI_SRC_DIR:-$REPO_ROOT/.build/llama.cpp}"
+SRC_DIR="${IKAROS_SRC_DIR:-$REPO_ROOT/.build/llama.cpp}"
 DEST="$BIN_DIR/$BACKEND-patched"
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ step "Preparing source"
 info "Fork   : $PRISM_REPO"
 info "Commit : $PRISM_COMMIT"
 
-if [ -d "$SRC_DIR/.git" ] && [ -z "${BONSAI_SRC_FORCE:-}" ]; then
+if [ -d "$SRC_DIR/.git" ] && [ -z "${IKAROS_SRC_FORCE:-}" ]; then
     info "Reusing existing checkout at $SRC_DIR"
 else
     rm -rf "$SRC_DIR"
@@ -193,7 +193,7 @@ step "Decode-speed capabilities of this build"
 _help_text="$("$BUILT_BIN" --help 2>&1 || true)"
 if printf '%s' "$_help_text" | grep -q -- '--moe-cache-mib'; then
     info "--moe-cache-mib present (MoE expert cache; +1.5-1.85x decode, PR #29887)."
-    dim "  Use it: BONSAI_MOE_CACHE_MIB=2048 ./scripts/start-server.sh"
+    dim "  Use it: IKAROS_MOE_CACHE_MIB=2048 ./scripts/start-server.sh"
 else
     dim "  --moe-cache-mib not in this build (needs a newer llama.cpp than $PRISM_COMMIT)."
 fi

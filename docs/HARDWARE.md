@@ -127,7 +127,7 @@ known f16 cache.
 
 ### KV cache quantization is on by default
 
-`BONSAI_KV_TYPE` defaults to `q8_0`. It costs a small amount of precision for a large
+`IKAROS_KV_TYPE` defaults to `q8_0`. It costs a small amount of precision for a large
 amount of memory, and at 64K context that trade is clearly worth taking.
 
 | Value | Effect |
@@ -141,9 +141,9 @@ amount of memory, and at 64K context that trade is clearly worth taking.
 
 ```bash
 ./scripts/start-server.sh                              # q8_0, the default
-BONSAI_KV_TYPE=f16 ./scripts/start-server.sh           # turn it off
-BONSAI_KV_TYPE=iq4_nl ./scripts/start-server.sh        # push for memory
-BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 ./scripts/start-server.sh
+IKAROS_KV_TYPE=f16 ./scripts/start-server.sh           # turn it off
+IKAROS_KV_TYPE=iq4_nl ./scripts/start-server.sh        # push for memory
+IKAROS_KV_TYPE_K=q4_0 IKAROS_KV_TYPE_V=q8_0 ./scripts/start-server.sh
 ./scripts/start-server.sh --kv-type q4_0               # same thing as the env var
 ```
 
@@ -175,8 +175,8 @@ It generates a calibration corpus from the model itself (no external data needed
 computes the bias, and prints the command to serve it. Then:
 
 ```bash
-BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
-BONSAI_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" ./scripts/start-server.sh
+IKAROS_KV_TYPE_K=q4_0 IKAROS_KV_TYPE_V=q8_0 \
+IKAROS_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" ./scripts/start-server.sh
 ```
 
 Measured on the 8B at 65536 tokens:
@@ -293,10 +293,10 @@ Measured on the 8B at 16384 context. The ordering matters more than the exact fi
 | `--flash-attn off` | fails: a quantized V cache requires flash attention |
 
 Run-to-run variance on this hardware is around 2-3%, so anything smaller than that is
-noise. `./scripts/bonsai tune` measures the same set on your machine and will not call
+noise. `./scripts/ikaros tune` measures the same set on your machine and will not call
 a gap inside the noise a win. It also checks the GPU offload split for you: if this
 machine is too small for a full offload, it caps the baseline at the largest split that
-fits and records it, so `./scripts/bonsai apply` serves a config that loads here rather
+fits and records it, so `./scripts/ikaros apply` serves a config that loads here rather
 than OOMing on a smaller card.
 
 The thread result is worth stating plainly because the usual advice is to tune it: with
@@ -312,10 +312,10 @@ multiply generation speed. Two mechanisms are supported here:
 multi-token-prediction head, so no second file is needed:
 
 ```bash
-BONSAI_SPEC_TYPE=draft-mtp ./scripts/bonsai start
+IKAROS_SPEC_TYPE=draft-mtp ./scripts/ikaros start
 ```
 
-**A separate drafter.** `BONSAI_DRAFT_MODEL` passes `--model-draft`. PrismML publishes
+**A separate drafter.** `IKAROS_DRAFT_MODEL` passes `--model-draft`. PrismML publishes
 `Ternary-Bonsai-27B-dspark-Q4_1.gguf` (1.9 GB) for the 27B.
 
 #### Measured here: use `n-max 1`
@@ -435,7 +435,7 @@ ROCm is simply faster.
 Lowering the context shrinks the cache linearly, and stacks with the type:
 
 ```bash
-BONSAI_CTX=16384 ./scripts/start-server.sh
+IKAROS_CTX=16384 ./scripts/start-server.sh
 ```
 
 At 16384 with `q8_0`, the 8B cache drops to about 1.2 GB and the 27B to about 0.95 GB.

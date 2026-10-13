@@ -1,6 +1,49 @@
 #!/usr/bin/env bash
-# Shared helpers for the Ikaros Bonsai server scripts.
+# Shared helpers for the Ikaros local model server scripts.
 # Source this file: . "$(dirname "$0")/lib/common.sh"
+
+# ---------------------------------------------------------------------------
+# Back-compat: IKAROS_* -> IKAROS_*
+# ---------------------------------------------------------------------------
+
+# The project was renamed from "ikaros" to "ikaros". Every environment
+# variable is now IKAROS_*, but an existing install may still export IKAROS_*
+# (a settings file, a systemd unit, a shell profile, a script). Rather than
+# sprinkle fallbacks through every consumer, map the old names onto the new
+# ones here, once, before anything reads them: a IKAROS_X is honoured as
+# IKAROS_X when IKAROS_X is not itself set, so an explicit new name always
+# wins. This block is the single place the old spelling is recognised; the
+# rest of the codebase only knows IKAROS_*.
+#
+# The list is every var this file and the scripts consume, so a typo in a
+# future addition is caught by the test that checks the two spellings stay in
+# sync (tests/run.sh, "env var back-compat").
+_ikaros_aliases=(
+    IKAROS_CALIB_TOKENS IKAROS_CTX IKAROS_DRAFT_MODEL IKAROS_EXTRA_ARGS
+    IKAROS_HOST IKAROS_KV_BIAS_OUT IKAROS_KV_TYPE IKAROS_KV_TYPE_K IKAROS_KV_TYPE_V
+    IKAROS_MODELS_DIR IKAROS_MOE_CACHE_MIB IKAROS_NGL IKAROS_PORT IKAROS_PREFIX
+    IKAROS_SPEC_DRAFT_N_MAX IKAROS_SPEC_DRAFT_P_MIN IKAROS_SPEC_STACK IKAROS_SPEC_TYPE
+    IKAROS_SRC_DIR IKAROS_SRC_FORCE IKAROS_START_TIMEOUT IKAROS_STATE_DIR
+    IKAROS_TEST_SRC IKAROS_THREADS
+    IKAROS_FAKE_CPUINFO IKAROS_FAKE_LSPCI IKAROS_FAKE_NVIDIA_SMI IKAROS_FAKE_RAM_KB
+    IKAROS_FAKE_ROCM_GFX IKAROS_FAKE_ROCM_PREFIX IKAROS_FAKE_ROCM_VERSION
+    IKAROS_FAKE_UNAME_M IKAROS_FAKE_UNAME_S IKAROS_FAKE_VRAM_BYTES IKAROS_FAKE_VULKAN
+)
+for _new in "${_ikaros_aliases[@]}"; do
+    _old="BONSAI_${_new#IKAROS_}"
+    # Two-step, not ${!_old+set}: the +set indirect test does not behave as a
+    # set-test on the indirect value (it never matched, so nothing aliased).
+    # Read the old value, then alias only when it is non-empty. An empty
+    # BONSAI_X must not create an empty IKAROS_X - that would defeat the
+    # ${IKAROS_X:-default} defaults below.
+    _val="${!_old:-}"
+    # An explicit IKAROS_X always wins: skip when the new name is already set
+    # to a non-empty value (declare -p distinguishes set from unset).
+    if [ -n "$_val" ] && [ -z "${!_new:-}" ]; then
+        export "$_new=$_val"
+    fi
+done
+unset _new _old _val _ikaros_aliases
 
 # ---------------------------------------------------------------------------
 # Paths and constants
@@ -13,18 +56,18 @@ unset _common_dir
 
 # Record which settings the caller supplied before any default is applied below.
 # Without this, load_settings cannot tell a deliberate override from a default,
-# and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
-_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_THREADS BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_SPEC_DRAFT_P_MIN"
-_BONSAI_FROM_ENV=""
-for _v in $_BONSAI_SETTINGS; do
-    if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
+# and a one-off `IKAROS_CTX=... ./scripts/start-server.sh` would be ignored.
+_IKAROS_SETTINGS="IKAROS_PORT IKAROS_CTX IKAROS_NGL IKAROS_THREADS IKAROS_KV_TYPE IKAROS_KV_TYPE_K IKAROS_KV_TYPE_V IKAROS_MODELS_DIR IKAROS_DRAFT_MODEL IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX IKAROS_SPEC_DRAFT_P_MIN"
+_IKAROS_FROM_ENV=""
+for _v in $_IKAROS_SETTINGS; do
+    if [ -n "${!_v+set}" ]; then _IKAROS_FROM_ENV="$_IKAROS_FROM_ENV $_v"; fi
 done
 
-STATE_DIR="${BONSAI_STATE_DIR:-$REPO_ROOT/.state}"
+STATE_DIR="${IKAROS_STATE_DIR:-$REPO_ROOT/.state}"
 BIN_DIR="$REPO_ROOT/bin"
 # Exported so the per-script globals stay visible to shellcheck and to any
 # child process that needs them.
-MODELS_DIR="${BONSAI_MODELS_DIR:-$REPO_ROOT/models}"
+MODELS_DIR="${IKAROS_MODELS_DIR:-$REPO_ROOT/models}"
 export MODELS_DIR STATE_DIR BIN_DIR
 
 # Pinned upstream release. Bump PRISM_RELEASE and PRISM_COMMIT together.
@@ -41,45 +84,45 @@ PRISM_REPO="${PRISM_REPO:-PrismML-Eng/llama.cpp}"
 # BACKEND-dependent - Vulkan: n-max 2 (54.9 tok/s), ROCm: n-max 1 (51.2), both
 # well above the ~35 tok/s baseline. Below 1.0 the floor is disabled.
 #
-# BONSAI_SPEC_DRAFT_P_MIN is the draft probability floor (llama.cpp default
+# IKAROS_SPEC_DRAFT_P_MIN is the draft probability floor (llama.cpp default
 # 0.0 = disabled). Upstream measured +15% at n-max 16 / p-min 0.8 on a 5090
 # with Gemma4-31B (GH #25198), so the wiring exists for hardware where it
 # helps. MEASURED ON THIS CARD (RX 9060 XT, Oct 2026): it does NOT help -
 # lean n-max 4/8/16 with p-min 0.8 scored 38.5 / 37.1 / 32.7 vs 47.7 for
 # plain n-max 2. Deeper speculation hurts here and the floor does not rescue
 # it. Left at 0.0 by default; see docs/RESEARCH-2026-10.md section 2.
-BONSAI_SPEC_TYPE="${BONSAI_SPEC_TYPE:-}"
-BONSAI_SPEC_DRAFT_N_MAX="${BONSAI_SPEC_DRAFT_N_MAX:-1}"
-BONSAI_SPEC_DRAFT_P_MIN="${BONSAI_SPEC_DRAFT_P_MIN:-0.0}"
+IKAROS_SPEC_TYPE="${IKAROS_SPEC_TYPE:-}"
+IKAROS_SPEC_DRAFT_N_MAX="${IKAROS_SPEC_DRAFT_N_MAX:-1}"
+IKAROS_SPEC_DRAFT_P_MIN="${IKAROS_SPEC_DRAFT_P_MIN:-0.0}"
 
 # Optional draft model for speculative decoding. Must share the target's
 # vocabulary; the PrismML repos ship purpose-trained drafters named *-dspark-*.
 # A smaller model from the same family does NOT work: measured at no gain,
 # because its predictions are rejected too often. See docs/HARDWARE.md.
-BONSAI_DRAFT_MODEL="${BONSAI_DRAFT_MODEL:-}"
+IKAROS_DRAFT_MODEL="${IKAROS_DRAFT_MODEL:-}"
 
 # Server defaults. Hermes requires a context window of at least 64000 tokens.
-BONSAI_PORT="${BONSAI_PORT:-8081}"
-BONSAI_CTX="${BONSAI_CTX:-65536}"
-BONSAI_NGL="${BONSAI_NGL:-99}"
+IKAROS_PORT="${IKAROS_PORT:-8081}"
+IKAROS_CTX="${IKAROS_CTX:-65536}"
+IKAROS_NGL="${IKAROS_NGL:-99}"
 # Host threads for the CPU scheduler. Defaults to all logical cores. Under full
 # GPU offload this is measured as noise; on CPU-only and partial-offload builds
 # it is often the largest lever, so it is a setting rather than a constant.
-BONSAI_THREADS="${BONSAI_THREADS:-$(nproc 2>/dev/null || echo 4)}"
+IKAROS_THREADS="${IKAROS_THREADS:-$(nproc 2>/dev/null || echo 4)}"
 
 # KV cache quantization. At the 65536 context Hermes requires, the cache is the
 # single biggest consumer of VRAM and q8_0 halves it at negligible quality cost,
-# so it is the default. Set BONSAI_KV_TYPE=f16 to turn it off, or q4_0/iq4_nl
+# so it is the default. Set IKAROS_KV_TYPE=f16 to turn it off, or q4_0/iq4_nl
 # for roughly a quarter of the f16 size.
 #
-# BONSAI_KV_TYPE sets both halves; BONSAI_KV_TYPE_K / _V override one half.
+# IKAROS_KV_TYPE sets both halves; IKAROS_KV_TYPE_K / _V override one half.
 # They stay empty here so that --kv-type on the command line still composes.
 # Always resolve through kv_type_k / kv_type_v, never the raw variables.
 # "auto" picks f16 when the largest installed model still fits with it, and
 # q8_0 otherwise. Resolved at start time, so it adapts as models are added.
-BONSAI_KV_TYPE="${BONSAI_KV_TYPE:-auto}"
-BONSAI_KV_TYPE_K="${BONSAI_KV_TYPE_K:-}"
-BONSAI_KV_TYPE_V="${BONSAI_KV_TYPE_V:-}"
+IKAROS_KV_TYPE="${IKAROS_KV_TYPE:-auto}"
+IKAROS_KV_TYPE_K="${IKAROS_KV_TYPE_K:-}"
+IKAROS_KV_TYPE_V="${IKAROS_KV_TYPE_V:-}"
 
 # Types the pinned build accepts for --cache-type-k and --cache-type-v.
 # tests/run.sh asserts this matches what the installed binary reports, so it
@@ -96,8 +139,8 @@ kv_type_valid() {
 }
 
 # kv_type_k / kv_type_v - the resolved type for each half of the cache.
-kv_type_k() { printf '%s' "${BONSAI_KV_TYPE_K:-$BONSAI_KV_TYPE}"; }
-kv_type_v() { printf '%s' "${BONSAI_KV_TYPE_V:-$BONSAI_KV_TYPE}"; }
+kv_type_k() { printf '%s' "${IKAROS_KV_TYPE_K:-$IKAROS_KV_TYPE}"; }
+kv_type_v() { printf '%s' "${IKAROS_KV_TYPE_V:-$IKAROS_KV_TYPE}"; }
 
 # kv_type_effective - print the KV type that will actually be applied, or "f16"
 # when quantization is disabled on both halves.
@@ -118,7 +161,7 @@ kv_type_effective() {
 # ---------------------------------------------------------------------------
 
 # A single editable file holding the settings, shared by the interactive
-# launcher and the systemd unit. `./scripts/bonsai set` writes it, and the unit
+# launcher and the systemd unit. `./scripts/ikaros set` writes it, and the unit
 # reads it through EnvironmentFile, so changing a setting never means
 # reinstalling anything.
 SETTINGS_FILE="$STATE_DIR/service.env"
@@ -132,9 +175,9 @@ load_settings() {
         case "$_line" in ''|'#'*) continue ;; esac
         _key="${_line%%=*}"
         _val="${_line#*=}"
-        case "$_key" in BONSAI_*) ;; *) continue ;; esac
+        case "$_key" in IKAROS_*) ;; *) continue ;; esac
         _skip=0
-        for _v in $_BONSAI_FROM_ENV; do
+        for _v in $_IKAROS_FROM_ENV; do
             [ "$_v" = "$_key" ] && _skip=1
         done
         [ "$_skip" = 1 ] && continue
@@ -143,7 +186,7 @@ load_settings() {
 }
 
 # ---------------------------------------------------------------------------
-# Settings file helpers (used by `bonsai set` and `bonsai apply`)
+# Settings file helpers (used by `ikaros set` and `ikaros apply`)
 # ---------------------------------------------------------------------------
 
 # settings_set KEY VALUE - write one KEY=VALUE into the settings file,
@@ -176,34 +219,34 @@ settings_unset() {
 TUNE_BEST_FILE="$STATE_DIR/tune-best.env"
 
 # write_tune_best ENVSTRING BACKEND - record the winning config of a
-# `bonsai tune` run. ENVSTRING is the variant's KEY=VALUE settings (spec,
+# `ikaros tune` run. ENVSTRING is the variant's KEY=VALUE settings (spec,
 # n-max, ubatch, kv type). Backended-tagged so a later run on a different GPU
 # does not apply a config measured under another backend. This is a record,
-# not an automatic apply; use `apply_tune_best` (or `./scripts/bonsai apply`).
+# not an automatic apply; use `apply_tune_best` (or `./scripts/ikaros apply`).
 write_tune_best() {
     local _env="$1" _backend="$2" _k
     mkdir -p "$STATE_DIR"
     {
-        printf '# Winner of the last `bonsai tune` run. Backended-tagged.\n'
-        printf '# Apply safely with:  ./scripts/bonsai apply\n'
-        printf 'BONSAI_TUNED_BACKEND=%s\n' "$_backend"
-        printf 'BONSAI_TUNED_AT=%s\n' "$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo now)"
+        printf '# Winner of the last `ikaros tune` run. Backended-tagged.\n'
+        printf '# Apply safely with:  ./scripts/ikaros apply\n'
+        printf 'IKAROS_TUNED_BACKEND=%s\n' "$_backend"
+        printf 'IKAROS_TUNED_AT=%s\n' "$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo now)"
         # Emit each KEY=VALUE the winner used. Start from a clean slate so
-        # inherited ambient values (e.g. the BONSAI_THREADS default) are not
+        # inherited ambient values (e.g. the IKAROS_THREADS default) are not
         # recorded as part of the winner. Then parse ENVSTRING with eval so
-        # quoted values like BONSAI_EXTRA_ARGS="--ubatch-size 256" come through.
-        ( unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
+        # quoted values like IKAROS_EXTRA_ARGS="--ubatch-size 256" come through.
+        ( unset IKAROS_KV_TYPE IKAROS_KV_TYPE_K IKAROS_KV_TYPE_V \
+                IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX IKAROS_NGL \
+                IKAROS_CTX IKAROS_EXTRA_ARGS IKAROS_THREADS 2>/dev/null || true
             eval "$_env" 2>/dev/null || true
-            # BONSAI_CTX is machine- and model-specific: the tune measured the
+            # IKAROS_CTX is machine- and model-specific: the tune measured the
             # winner AT this context, so applying it at another silently
             # changes what was measured. CONTEXT is what the tune actually ran
-            # at (it can differ from the ambient BONSAI_CTX via --context).
-            [ -n "${CONTEXT:-}" ] && BONSAI_CTX="$CONTEXT"
-            for _k in BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                      BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                      BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS; do
+            # at (it can differ from the ambient IKAROS_CTX via --context).
+            [ -n "${CONTEXT:-}" ] && IKAROS_CTX="$CONTEXT"
+            for _k in IKAROS_KV_TYPE IKAROS_KV_TYPE_K IKAROS_KV_TYPE_V \
+                      IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX IKAROS_NGL \
+                      IKAROS_CTX IKAROS_EXTRA_ARGS IKAROS_THREADS; do
                 [ -n "${!_k:-}" ] && printf '%s=%s\n' "$_k" "${!_k:-}"
             done
             : # ensure the subshell returns success even if the last key was unset
@@ -212,24 +255,24 @@ write_tune_best() {
 }
 
 # apply_tune_best - project the recorded winner onto the live settings file.
-# Only machine-level knobs safe in router mode are persisted: BONSAI_THREADS
-# and BONSAI_EXTRA_ARGS (ubatch). The KV cache type is left to `auto` (it is
+# Only machine-level knobs safe in router mode are persisted: IKAROS_THREADS
+# and IKAROS_EXTRA_ARGS (ubatch). The KV cache type is left to `auto` (it is
 # model-size-dependent and must re-decide per model). Speculative-decode
 # settings are applied only when the backend matches the one the winner was
 # measured under - draft efficiency is backend-specific, and a cross-backend
 # apply would be slower, not faster.
 apply_tune_best() {
-    [ -f "$TUNE_BEST_FILE" ] || { warn "No tune result recorded. Run: ./scripts/bonsai tune"; return 1; }
+    [ -f "$TUNE_BEST_FILE" ] || { warn "No tune result recorded. Run: ./scripts/ikaros tune"; return 1; }
     [ -n "${BACKEND:-}" ]     || { warn "No backend loaded. Run: ./scripts/detect.sh"; return 1; }
     # Clear ambient defaults first, so only the winner's recorded keys survive
-    # - e.g. BONSAI_THREADS is always set by common.sh, but a winner that did
+    # - e.g. IKAROS_THREADS is always set by common.sh, but a winner that did
     # not measure threads must not drag the default into the settings file.
-    unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-          BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-          BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS
+    unset IKAROS_KV_TYPE IKAROS_KV_TYPE_K IKAROS_KV_TYPE_V \
+          IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX IKAROS_NGL \
+          IKAROS_CTX IKAROS_EXTRA_ARGS IKAROS_THREADS
     # shellcheck source=/dev/null
     . "$TUNE_BEST_FILE"
-    local _tuned_backend="${BONSAI_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
+    local _tuned_backend="${IKAROS_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
     if [ -n "$_tuned_backend" ] && [ "$_tuned_backend" != "$BACKEND" ]; then
         _skip_spec=1
         warn "Tune result was measured on backend '$_tuned_backend' but this machine is '$BACKEND'."
@@ -238,37 +281,37 @@ apply_tune_best() {
     # Safe, machine-level knobs. The offload split (NGL) and thread count are
     # machine-specific and backend-agnostic in the same way threads are, so they
     # are applied even on a cross-backend apply (only the spec-type is gated).
-    [ -n "${BONSAI_THREADS:-}" ]     && { settings_set BONSAI_THREADS "$BONSAI_THREADS"; _applied=1; }
-    [ -n "${BONSAI_EXTRA_ARGS:-}" ]  && { settings_set BONSAI_EXTRA_ARGS "$BONSAI_EXTRA_ARGS"; _applied=1; }
-    [ -n "${BONSAI_NGL:-}" ]         && { settings_set BONSAI_NGL "$BONSAI_NGL"; _applied=1; }
+    [ -n "${IKAROS_THREADS:-}" ]     && { settings_set IKAROS_THREADS "$IKAROS_THREADS"; _applied=1; }
+    [ -n "${IKAROS_EXTRA_ARGS:-}" ]  && { settings_set IKAROS_EXTRA_ARGS "$IKAROS_EXTRA_ARGS"; _applied=1; }
+    [ -n "${IKAROS_NGL:-}" ]         && { settings_set IKAROS_NGL "$IKAROS_NGL"; _applied=1; }
     # Context: the tune measured the winner AT this context, so it belongs to
     # the winner. Without this the apply silently reverted to the 65536 default
     # and a model tuned at 8192 OOM'd on its next start.
-    [ -n "${BONSAI_CTX:-}" ]         && { settings_set BONSAI_CTX "$BONSAI_CTX"; _applied=1; }
+    [ -n "${IKAROS_CTX:-}" ]         && { settings_set IKAROS_CTX "$IKAROS_CTX"; _applied=1; }
     # Speculative settings: backend-specific. Only apply when the backend
     # matches the one the winner was measured under; otherwise drop any stale
     # value so a config tuned for Vulkan, say, does not end up running on ROCm
     # (where draft-n-max 2 is slower than baseline).
     if [ "$_skip_spec" = 1 ]; then
-        if [ -n "${BONSAI_SPEC_TYPE:-}" ] || [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ]; then
-            settings_unset BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        if [ -n "${IKAROS_SPEC_TYPE:-}" ] || [ -n "${IKAROS_SPEC_DRAFT_N_MAX:-}" ]; then
+            settings_unset IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX
             _did_specenv=""
-            [ -n "${BONSAI_SPEC_TYPE:-}" ] && _did_specenv="BONSAI_SPEC_TYPE=${BONSAI_SPEC_TYPE}"
-            [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && _did_specenv="${_did_specenv:+$_did_specenv }BONSAI_SPEC_DRAFT_N_MAX=${BONSAI_SPEC_DRAFT_N_MAX}"
+            [ -n "${IKAROS_SPEC_TYPE:-}" ] && _did_specenv="IKAROS_SPEC_TYPE=${IKAROS_SPEC_TYPE}"
+            [ -n "${IKAROS_SPEC_DRAFT_N_MAX:-}" ] && _did_specenv="${_did_specenv:+$_did_specenv }IKAROS_SPEC_DRAFT_N_MAX=${IKAROS_SPEC_DRAFT_N_MAX}"
             dim "  To use it on this backend anyway (MTP models only), run:"
             dim "    $_did_specenv ./scripts/start-server.sh"
         fi
     else
-        [ -n "${BONSAI_SPEC_TYPE:-}" ] && { settings_set BONSAI_SPEC_TYPE "$BONSAI_SPEC_TYPE"; _applied=1; }
-        [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && { settings_set BONSAI_SPEC_DRAFT_N_MAX "$BONSAI_SPEC_DRAFT_N_MAX"; _applied=1; }
+        [ -n "${IKAROS_SPEC_TYPE:-}" ] && { settings_set IKAROS_SPEC_TYPE "$IKAROS_SPEC_TYPE"; _applied=1; }
+        [ -n "${IKAROS_SPEC_DRAFT_N_MAX:-}" ] && { settings_set IKAROS_SPEC_DRAFT_N_MAX "$IKAROS_SPEC_DRAFT_N_MAX"; _applied=1; }
     fi
     if [ "$_applied" = 0 ]; then
         # Winner was the default; make sure no stale tuned values linger.
-        settings_unset BONSAI_THREADS BONSAI_EXTRA_ARGS BONSAI_NGL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        settings_unset IKAROS_THREADS IKAROS_EXTRA_ARGS IKAROS_NGL IKAROS_SPEC_TYPE IKAROS_SPEC_DRAFT_N_MAX
         info "Tune winner was the default config; nothing to apply."
     else
         info "Applied the tune winner to $SETTINGS_FILE."
-        dim "  Restart to apply: ./scripts/bonsai restart"
+        dim "  Restart to apply: ./scripts/ikaros restart"
     fi
     return 0
 }
@@ -296,7 +339,7 @@ die() { err "$*"; exit 1; }
 
 # usage_die - like die, but exit 2: the conventional code for a usage error
 # (bad flag, bad value, wrong argument count), distinct from 1, a runtime
-# failure (no server, no model, out of memory). A script wrapping bonsai can
+# failure (no server, no model, out of memory). A script wrapping ikaros can
 # now tell "you called me wrong" from "the world is wrong" without parsing
 # stderr. Only the argument-validation paths use this; a runtime failure keeps
 # exit 1, because that is what it is.
@@ -755,7 +798,7 @@ kv_type_auto_choice() {
     _w_gb="$(awk -v b="$(model_size_bytes "$_largest")" 'BEGIN { printf "%.2f", b/1073741824 }')"
 
     for _t in f16 q8_0; do
-        _kv_gb="$(kv_mib "$_largest" "$BONSAI_CTX" "$_t" 2>/dev/null |
+        _kv_gb="$(kv_mib "$_largest" "$IKAROS_CTX" "$_t" 2>/dev/null |
             awk '{ printf "%.2f", $1/1024 }')"
         [ -n "$_kv_gb" ] || continue
         if awk -v w="$_w_gb" -v k="$_kv_gb" -v b="$_budget" 'BEGIN { exit !(w + k <= b) }'; then
@@ -784,8 +827,8 @@ kv_type_auto_reason() {
 # Any entry point that needs the effective type must call this first, otherwise
 # it sees the literal string "auto" and fails validation.
 kv_type_resolve() {
-    [ "${BONSAI_KV_TYPE:-}" = "auto" ] || return 0
-    BONSAI_KV_TYPE="$(kv_type_auto)"
+    [ "${IKAROS_KV_TYPE:-}" = "auto" ] || return 0
+    IKAROS_KV_TYPE="$(kv_type_auto)"
 }
 
 # kv_budget_gb - memory the models may use, with headroom held back.

@@ -94,7 +94,7 @@ curl -s http://localhost:8081/v1/chat/completions \
 ## Context window
 
 Hermes requires at least 64000 tokens of context. The server defaults to 65536, which
-is why `start-server.sh` warns if you set `BONSAI_CTX` below that. Bonsai 2 supports up
+is why `start-server.sh` warns if you set `IKAROS_CTX` below that. Bonsai 2 supports up
 to 262144, but every extra token of context costs VRAM.
 
 ## Model aliases

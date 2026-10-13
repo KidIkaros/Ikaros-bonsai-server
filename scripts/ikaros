@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# bonsai - one command to run and manage the local model server.
+# ikaros - one command to run and manage the local model server.
 #
-#   ./scripts/bonsai start          start it (service if installed, else background)
-#   ./scripts/bonsai stop
-#   ./scripts/bonsai restart        apply settings changes
-#   ./scripts/bonsai status         what is running, on which port, with what loaded
-#   ./scripts/bonsai logs [-f]      follow the log
-#   ./scripts/bonsai show           the current settings
-#   ./scripts/bonsai set ctx 32768  change a setting
-#   ./scripts/bonsai speed          quick tokens/sec check against the running server
-#   ./scripts/bonsai fastest        every measured configuration, fastest first
-#   ./scripts/bonsai fastest --json same, as machine-readable JSON
-#   ./scripts/bonsai bench [model]  measure a model on this machine, one row
-#   ./scripts/bonsai identity [model]  is the MTP draft lossless on this backend?
-#   ./scripts/bonsai tune           find the fastest settings on this machine
-#   ./scripts/bonsai apply          persist the last tune's winner to settings
-#   ./scripts/bonsai assess         what fits, and how the KV type changes it
-#   ./scripts/bonsai coverage       which settings have been tried, and which have not
-#   ./scripts/bonsai models         list installed models
-#   ./scripts/bonsai completions bash|zsh|fish   print shell tab-completion
+#   ./scripts/ikaros start          start it (service if installed, else background)
+#   ./scripts/ikaros stop
+#   ./scripts/ikaros restart        apply settings changes
+#   ./scripts/ikaros status         what is running, on which port, with what loaded
+#   ./scripts/ikaros logs [-f]      follow the log
+#   ./scripts/ikaros show           the current settings
+#   ./scripts/ikaros set ctx 32768  change a setting
+#   ./scripts/ikaros speed          quick tokens/sec check against the running server
+#   ./scripts/ikaros fastest        every measured configuration, fastest first
+#   ./scripts/ikaros fastest --json same, as machine-readable JSON
+#   ./scripts/ikaros bench [model]  measure a model on this machine, one row
+#   ./scripts/ikaros identity [model]  is the MTP draft lossless on this backend?
+#   ./scripts/ikaros tune           find the fastest settings on this machine
+#   ./scripts/ikaros apply          persist the last tune's winner to settings
+#   ./scripts/ikaros assess         what fits, and how the KV type changes it
+#   ./scripts/ikaros coverage       which settings have been tried, and which have not
+#   ./scripts/ikaros models         list installed models
+#   ./scripts/ikaros completions bash|zsh|fish   print shell tab-completion
 #
 # Settings live in .state/service.env. Editing it, or using `set`, is enough:
 # nothing needs reinstalling.
@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
-UNIT_NAME="ikaros-bonsai.service"
+UNIT_NAME="ikaros.service"
 
 CMD="${1:-help}"
 shift || true
@@ -59,7 +59,7 @@ our_pid() {
     fi
     if command -v lsof >/dev/null 2>&1; then
         local _p
-        for _p in $(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true); do
+        for _p in $(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null || true); do
             local _cmd
             _cmd="$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null || true)"
             case "$_cmd" in *"$BIN_DIR"*|*"$REPO_ROOT"*) printf '%s' "$_p"; return 0 ;; esac
@@ -70,7 +70,7 @@ our_pid() {
 
 server_up() {
     command -v curl >/dev/null 2>&1 || return 1
-    curl -sf --max-time 3 "http://127.0.0.1:$BONSAI_PORT/health" >/dev/null 2>&1
+    curl -sf --max-time 3 "http://127.0.0.1:$IKAROS_PORT/health" >/dev/null 2>&1
 }
 
 # Commands that report on the machine need the detection, not just the settings.
@@ -93,14 +93,14 @@ case "$CMD" in
             exit 0
         fi
         if server_up; then
-            info "Something is already answering on port $BONSAI_PORT."
-            dim "  ./scripts/bonsai status  to see what"
+            info "Something is already answering on port $IKAROS_PORT."
+            dim "  ./scripts/ikaros status  to see what"
             exit 0
         fi
         if unit_installed && have_systemd; then
             systemctl --user start "$UNIT_NAME"
             info "Started $UNIT_NAME."
-            dim "  ./scripts/bonsai logs -f"
+            dim "  ./scripts/ikaros logs -f"
         else
             "$SCRIPT_DIR/start-server.sh" --no-browser --background
         fi
@@ -144,23 +144,23 @@ case "$CMD" in
 
         if server_up; then
             if _pid="$(our_pid)"; then
-                info "Server  : answering on http://localhost:$BONSAI_PORT (pid $_pid)"
+                info "Server  : answering on http://localhost:$IKAROS_PORT (pid $_pid)"
             else
-                warn "Server  : port $BONSAI_PORT answers, but it is not this repo's server."
+                warn "Server  : port $IKAROS_PORT answers, but it is not this repo's server."
                 dim "            Another instance owns the port; this one is stopped."
             fi
         else
-            warn "Server  : nothing answering on port $BONSAI_PORT"
+            warn "Server  : nothing answering on port $IKAROS_PORT"
         fi
 
         info "KV cache: $(kv_type_effective)"
-        info "Context : $BONSAI_CTX"
+        info "Context : $IKAROS_CTX"
         if [ -n "${GPU_NAME:-}" ]; then
             info "GPU     : $GPU_NAME (${BACKEND:-unknown})"
         fi
 
         if server_up; then
-            _loaded="$(curl -s --max-time 5 "http://127.0.0.1:$BONSAI_PORT/v1/models" 2>/dev/null |
+            _loaded="$(curl -s --max-time 5 "http://127.0.0.1:$IKAROS_PORT/v1/models" 2>/dev/null |
                 python3 -c '
 import json, sys
 try:
@@ -203,39 +203,39 @@ except Exception:
             grep -v '^#' "$SETTINGS_FILE" | grep -v '^$' | sed 's/^/  /'
         else
             dim "  No settings file yet; defaults are in use."
-            dim "  ./scripts/install-service.sh  writes one, or use ./scripts/bonsai set"
+            dim "  ./scripts/install-service.sh  writes one, or use ./scripts/ikaros set"
         fi
         echo ""
         dim "  Effective values:"
-        printf '    %-18s %s\n' "port" "$BONSAI_PORT" "context" "$BONSAI_CTX" \
-            "gpu layers" "$BONSAI_NGL" "kv type" "$(kv_type_effective)" >&2
+        printf '    %-18s %s\n' "port" "$IKAROS_PORT" "context" "$IKAROS_CTX" \
+            "gpu layers" "$IKAROS_NGL" "kv type" "$(kv_type_effective)" >&2
         ;;
 
     set)
         KEY="${1:-}"
         VAL="${2:-}"
         if [ -z "$KEY" ] || [ -z "$VAL" ]; then
-            usage_die "Usage: ./scripts/bonsai set <key> <value>
+            usage_die "Usage: ./scripts/ikaros set <key> <value>
        keys: port, ctx, ngl, kv, threads, models, moe-cache-mib"
         fi
 
         case "$(printf '%s' "$KEY" | tr '[:upper:]' '[:lower:]')" in
-            port)        VAR="BONSAI_PORT" ;;
-            ctx|context) VAR="BONSAI_CTX" ;;
-            ngl|gpu-layers) VAR="BONSAI_NGL" ;;
-            threads|cpu-threads) VAR="BONSAI_THREADS" ;;
-            kv|kv-type)  VAR="BONSAI_KV_TYPE" ;;
-            models|models-dir) VAR="BONSAI_MODELS_DIR" ;;
-            moe-cache-mib|moe-cache) VAR="BONSAI_MOE_CACHE_MIB" ;;
-            spec-type)   VAR="BONSAI_SPEC_TYPE" ;;
-            BONSAI_*)    VAR="$KEY" ;;
+            port)        VAR="IKAROS_PORT" ;;
+            ctx|context) VAR="IKAROS_CTX" ;;
+            ngl|gpu-layers) VAR="IKAROS_NGL" ;;
+            threads|cpu-threads) VAR="IKAROS_THREADS" ;;
+            kv|kv-type)  VAR="IKAROS_KV_TYPE" ;;
+            models|models-dir) VAR="IKAROS_MODELS_DIR" ;;
+            moe-cache-mib|moe-cache) VAR="IKAROS_MOE_CACHE_MIB" ;;
+            spec-type)   VAR="IKAROS_SPEC_TYPE" ;;
+            IKAROS_*)    VAR="$KEY" ;;
             *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib" ;;
         esac
 
         case "$VAR" in
-            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL|BONSAI_THREADS|BONSAI_MOE_CACHE_MIB)
+            IKAROS_CTX|IKAROS_PORT|IKAROS_NGL|IKAROS_THREADS|IKAROS_MOE_CACHE_MIB)
                 case "$VAL" in ''|*[!0-9]*) usage_die "$KEY needs a number, got '$VAL'." ;; esac ;;
-            BONSAI_KV_TYPE)
+            IKAROS_KV_TYPE)
                 case "$VAL" in
                     auto) ;;
                     *) kv_type_valid "$VAL" ||
@@ -250,7 +250,7 @@ except Exception:
         else
             {
                 printf '# Settings for the local Bonsai server.\n'
-                printf '# Edit a value and restart: ./scripts/bonsai restart\n'
+                printf '# Edit a value and restart: ./scripts/ikaros restart\n'
                 printf '\n'
             } > "$_tmp"
         fi
@@ -259,14 +259,14 @@ except Exception:
 
         info "$VAR=$VAL"
         if service_active; then
-            dim "  Restart to apply: ./scripts/bonsai restart"
+            dim "  Restart to apply: ./scripts/ikaros restart"
         fi
         ;;
 
     speed)
         load_settings
-        server_up || die "Nothing answering on port $BONSAI_PORT. Start it first."
-        _model="$(curl -s --max-time 5 "http://127.0.0.1:$BONSAI_PORT/v1/models" 2>/dev/null |
+        server_up || die "Nothing answering on port $IKAROS_PORT. Start it first."
+        _model="$(curl -s --max-time 5 "http://127.0.0.1:$IKAROS_PORT/v1/models" 2>/dev/null |
             python3 -c '
 import json, sys
 try:
@@ -283,7 +283,7 @@ except Exception:
         # from /v1/models goes into the payload - without it every check fails
         # with "model name is missing from the request", which reads as a
         # broken server rather than a missing field.
-        _tps="$(curl -s --max-time 300 "http://127.0.0.1:$BONSAI_PORT/v1/chat/completions" \
+        _tps="$(curl -s --max-time 300 "http://127.0.0.1:$IKAROS_PORT/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":64,"temperature":0.7}' "$_model")" 2>/dev/null |
             python3 -c '
@@ -297,7 +297,7 @@ except Exception:
             die "No measurement came back. Is a model loaded?"
         fi
         info "$_tps tok/s on $_model"
-        dim "  ./scripts/bonsai tune  to see whether other settings are faster"
+        dim "  ./scripts/ikaros tune  to see whether other settings are faster"
         ;;
 
     fastest)
@@ -358,8 +358,8 @@ except Exception:
             # assess.sh flags below are for when someone wants the pieces
             # separately (a sweep, or the full tune matrix).
             dim "  Create the rows on this machine:"
-            dim "    ./scripts/bonsai bench                 # measure + benchmark, one command"
-            dim "    ./scripts/bonsai bench <model.gguf>    # or a specific model"
+            dim "    ./scripts/ikaros bench                 # measure + benchmark, one command"
+            dim "    ./scripts/ikaros bench <model.gguf>    # or a specific model"
             echo ""
             dim "  More, when you want them:"
             dim "    ./scripts/assess.sh --sweep               # the offload split curve"
@@ -394,7 +394,7 @@ except Exception:
         if printf '%s\n' "$_rows" | awk -F'\t' '$8 != "" && $8 < 0.10' | grep -q .; then
             warn "Some rows have draft acceptance below 0.10 - the drafts are not landing."
             dim "  A spec type that does not pay here is slower than no spec type."
-            dim "  Serve without it: BONSAI_SPEC_TYPE=none ./scripts/start-server.sh"
+            dim "  Serve without it: IKAROS_SPEC_TYPE=none ./scripts/start-server.sh"
             echo ""
         fi
         dim "  Every number is measured on this backend and release, never estimated."
@@ -484,8 +484,8 @@ except Exception:
         case "$_shell" in
             bash)
                 cat <<EOF
-# bash completion for bonsai. Install with:
-#   bonsai completions bash > ~/.local/share/bash-completion/completions/bonsai
+# bash completion for ikaros. Install with:
+#   ikaros completions bash > ~/.local/share/bash-completion/completions/ikaros
 _bonsai_completions() {
     local cur="\${COMP_WORDS[COMP_CWORD]}"
     if [ "\$COMP_CWORD" -eq 1 ]; then
@@ -495,17 +495,17 @@ _bonsai_completions() {
     case "\${COMP_WORDS[1]}" in
         set)     COMPREPLY=( \$(compgen -W "port ctx ngl kv threads models moe-cache-mib spec-type" -- "\$cur") ) ;;
         logs)    COMPREPLY=( \$(compgen -W "-f" -- "\$cur") ) ;;
-        *)       COMPREPLY=( \$(compgen -W "\$(bonsai models 2>/dev/null | grep -oE '[^ ]+\.gguf' | sed 's/\.gguf\$//')" -- "\$cur") ) ;;
+        *)       COMPREPLY=( \$(compgen -W "\$(ikaros models 2>/dev/null | grep -oE '[^ ]+\.gguf' | sed 's/\.gguf\$//')" -- "\$cur") ) ;;
     esac
     return 0
 }
-complete -F _bonsai_completions bonsai
+complete -F _bonsai_completions ikaros
 EOF
                 ;;
             zsh)
                 cat <<EOF
-#compdef bonsai
-# zsh completion for bonsai. Install by placing in a directory on your
+#compdef ikaros
+# zsh completion for ikaros. Install by placing in a directory on your
 # \$fpath, e.g. ~/.zfunc/_bonsai, then: autoload -U compinit && compinit
 _bonsai() {
     local -a commands
@@ -529,12 +529,12 @@ _bonsai "\$@"
 EOF
                 ;;
             fish)
-                printf '# fish completion for bonsai. Install with:\n#   bonsai completions fish > ~/.config/fish/completions/bonsai.fish\n'
+                printf '# fish completion for ikaros. Install with:\n#   ikaros completions fish > ~/.config/fish/completions/ikaros.fish\n'
                 for _c in $_cmds; do
-                    printf 'complete -c bonsai -n "__fish_use_subcommand" -a "%s"\n' "$_c"
+                    printf 'complete -c ikaros -n "__fish_use_subcommand" -a "%s"\n' "$_c"
                 done
-                printf 'complete -c bonsai -n "__fish_seen_subcommand_from set" -a "port ctx ngl kv threads models moe-cache-mib spec-type"\n'
-                printf 'complete -c bonsai -n "__fish_seen_subcommand_from logs" -a "-f"\n'
+                printf 'complete -c ikaros -n "__fish_seen_subcommand_from set" -a "port ctx ngl kv threads models moe-cache-mib spec-type"\n'
+                printf 'complete -c ikaros -n "__fish_seen_subcommand_from logs" -a "-f"\n'
                 ;;
             *)
                 usage_die "Unknown shell '$_shell'. Try: bash, zsh, fish" ;;
@@ -581,8 +581,8 @@ EOF
         }
         if _near="$(suggest_cmd "$CMD")"; then
             usage_die "Unknown command '$CMD'. Did you mean '$_near'?
-       All commands: ./scripts/bonsai help"
+       All commands: ./scripts/ikaros help"
         fi
-        usage_die "Unknown command '$CMD'. Try: ./scripts/bonsai help"
+        usage_die "Unknown command '$CMD'. Try: ./scripts/ikaros help"
         ;;
 esac

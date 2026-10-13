@@ -16,7 +16,7 @@
 #
 # Overrides:
 #   HF_TOKEN=hf_xxx             for private or gated repos
-#   BONSAI_MODELS_DIR=/path     where GGUFs land (default: <repo>/models)
+#   IKAROS_MODELS_DIR=/path     where GGUFs land (default: <repo>/models)
 
 set -euo pipefail
 

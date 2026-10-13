@@ -45,7 +45,7 @@ request and distinguishes:
 ## 4. Unbounded waits
 
 **Guard:** every wait is bounded and every curl carries `--max-time`:
-- `start-server.sh` startup: `BONSAI_START_TIMEOUT` (default 120s)
+- `start-server.sh` startup: `IKAROS_START_TIMEOUT` (default 120s)
 - `bench_tps` health poll: 120s loop + `--max-time 5` per curl
 - `bench_tps` generation: `--max-time 300`
 

@@ -2,7 +2,7 @@
 # stop-server.sh - stop the llama-server started by start-server.sh.
 #
 # Usage:
-#   ./scripts/stop-server.sh            stop whatever is on BONSAI_PORT
+#   ./scripts/stop-server.sh            stop whatever is on IKAROS_PORT
 #   ./scripts/stop-server.sh --status   report whether it is running
 
 set -euo pipefail
@@ -21,7 +21,7 @@ for arg in "$@"; do
 done
 
 # Only ever stop a process we can prove is ours. Ports are shared real estate:
-# another service may legitimately own $BONSAI_PORT, and killing it because it
+# another service may legitimately own $IKAROS_PORT, and killing it because it
 # happens to be on the same port would be a serious bug.
 _is_ours() {
     _cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true)"
@@ -43,7 +43,7 @@ _find_our_pid() {
     fi
     # 2. anything on our port that is running our binary
     if command -v lsof >/dev/null 2>&1; then
-        for _p in $(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true); do
+        for _p in $(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null || true); do
             if _is_ours "$_p"; then printf '%s' "$_p"; return 0; fi
         done
     fi
@@ -56,24 +56,24 @@ if [ -z "$_pid" ]; then
     # Say clearly what is on the port, so a port clash is never silent.
     _other=""
     if command -v lsof >/dev/null 2>&1; then
-        _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
+        _other="$(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null | head -1 || true)"
     fi
     if [ -n "$_other" ]; then
-        warn "Something is listening on port $BONSAI_PORT, but it is not from this repo."
+        warn "Something is listening on port $IKAROS_PORT, but it is not from this repo."
         dim "  pid $_other: $(tr '\0' ' ' < "/proc/$_other/cmdline" 2>/dev/null | cut -c1-100)"
         echo "" >&2
         dim "  Leaving it alone. If it is your own service, stop it with systemd, e.g.:"
         dim "    systemctl --user stop <service>"
         dim "  Or run this repo on a different port:"
-        dim "    BONSAI_PORT=9000 ./scripts/start-server.sh"
+        dim "    IKAROS_PORT=9000 ./scripts/start-server.sh"
         exit 1
     fi
-    info "Nothing from this repo is listening on port $BONSAI_PORT."
+    info "Nothing from this repo is listening on port $IKAROS_PORT."
     exit 0
 fi
 
 if [ "$STATUS_ONLY" = 1 ]; then
-    info "Running on port $BONSAI_PORT (pid $_pid)."
+    info "Running on port $IKAROS_PORT (pid $_pid)."
     exit 0
 fi
 

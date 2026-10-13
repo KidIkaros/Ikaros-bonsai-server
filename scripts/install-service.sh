@@ -13,10 +13,10 @@
 #   ./scripts/install-service.sh --status    show current state
 #
 # After installing, start it when you actually want it:
-#   systemctl --user start ikaros-bonsai
-#   systemctl --user stop  ikaros-bonsai
+#   systemctl --user start ikaros
+#   systemctl --user stop  ikaros
 #
-# The KV cache type in use is baked in at install time from BONSAI_KV_TYPE
+# The KV cache type in use is baked in at install time from IKAROS_KV_TYPE
 # (default q8_0). Re-run this script after changing it.
 
 set -euo pipefail
@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
-UNIT_NAME="ikaros-bonsai.service"
+UNIT_NAME="ikaros.service"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_PATH="$UNIT_DIR/$UNIT_NAME"
 
@@ -68,7 +68,7 @@ esac
 have_systemd || die "systemd is not available. Use ./scripts/start-server.sh instead."
 
 # Load any existing settings FIRST. Without this the file is rewritten from
-# defaults, silently discarding whatever the user set with `bonsai set`.
+# defaults, silently discarding whatever the user set with `ikaros set`.
 load_settings
 
 if detect_is_stale; then
@@ -100,20 +100,20 @@ mkdir -p "$STATE_DIR"
 SETTINGS_TMP="$SETTINGS_FILE.tmp"
 {
     printf '# Settings for the local Bonsai server.\n'
-    printf '# Edit a value and restart: ./scripts/bonsai restart\n'
-    printf '# Or from the CLI:          ./scripts/bonsai set CTX 32768\n'
+    printf '# Edit a value and restart: ./scripts/ikaros restart\n'
+    printf '# Or from the CLI:          ./scripts/ikaros set CTX 32768\n'
     printf '#\n'
     printf '# A value exported in the shell still wins over this file.\n'
     printf '\n'
-    printf 'BONSAI_PORT=%s\n' "$BONSAI_PORT"
-    printf 'BONSAI_CTX=%s\n' "$BONSAI_CTX"
-    printf 'BONSAI_NGL=%s\n' "$BONSAI_NGL"
-    printf 'BONSAI_KV_TYPE=%s\n' "${BONSAI_KV_TYPE:-auto}"
-    printf 'BONSAI_MODELS_DIR=%s\n' "$MODELS_DIR"
-    [ -n "${BONSAI_DRAFT_MODEL:-}" ] &&
-        printf 'BONSAI_DRAFT_MODEL=%s\n' "$BONSAI_DRAFT_MODEL"
-    [ -n "${BONSAI_SPEC_TYPE:-}" ] &&
-        printf 'BONSAI_SPEC_TYPE=%s\n' "$BONSAI_SPEC_TYPE"
+    printf 'IKAROS_PORT=%s\n' "$IKAROS_PORT"
+    printf 'IKAROS_CTX=%s\n' "$IKAROS_CTX"
+    printf 'IKAROS_NGL=%s\n' "$IKAROS_NGL"
+    printf 'IKAROS_KV_TYPE=%s\n' "${IKAROS_KV_TYPE:-auto}"
+    printf 'IKAROS_MODELS_DIR=%s\n' "$MODELS_DIR"
+    [ -n "${IKAROS_DRAFT_MODEL:-}" ] &&
+        printf 'IKAROS_DRAFT_MODEL=%s\n' "$IKAROS_DRAFT_MODEL"
+    [ -n "${IKAROS_SPEC_TYPE:-}" ] &&
+        printf 'IKAROS_SPEC_TYPE=%s\n' "$IKAROS_SPEC_TYPE"
 } > "$SETTINGS_TMP"
 mv "$SETTINGS_TMP" "$SETTINGS_FILE"
 
@@ -192,9 +192,9 @@ if [ "$MODE" = "enable" ]; then
     fi
 else
     dim "Not enabled and not started, by design. To use it:"
-    echo "  ./scripts/bonsai start      # start now"
-    echo "  ./scripts/bonsai stop"
-    echo "  ./scripts/bonsai status"
+    echo "  ./scripts/ikaros start      # start now"
+    echo "  ./scripts/ikaros stop"
+    echo "  ./scripts/ikaros status"
     echo ""
     dim "  Or with systemd directly: systemctl --user start $UNIT_NAME"
 fi

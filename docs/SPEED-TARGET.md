@@ -47,7 +47,7 @@ User intent ("fastest 30B coder under 12GB")
 - Per model × backend: KV type, ubatch, NGL, MTP n-max, ctx
 - **New: backend is a tuned dimension** — run both, pick the winner
 
-### L4 Intent → recommendation (`bonsai recommend` — new)
+### L4 Intent → recommendation (`ikaros recommend` — new)
 - Parse intent → constraints → discover → filter → rank → emit config → apply
 
 ## Measured data — RX 9060 XT (288 GB/s, 16 GB, ROCm 7.2 + Vulkan/radv)

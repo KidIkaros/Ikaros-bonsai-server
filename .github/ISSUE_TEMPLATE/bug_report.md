@@ -40,7 +40,7 @@ assignees: ''
 <summary>service status (if relevant)</summary>
 
 ```
-<!-- systemctl --user status ikaros-bonsai -->
+<!-- systemctl --user status ikaros -->
 ```
 
 </details>
