@@ -1083,6 +1083,70 @@ else
     fail "README should reference docs/SPEED-BEYOND-MTP-2026-10.md"
 fi
 
+group "first-run guidance (discoverability)"
+
+# A first-time user hits `fastest` before any measurement exists. That state
+# must name bonsai bench first: it measures and benchmarks in one command, so
+# the measure-then-speed ordering never has to be learned.
+_fg="$(mktemp -d)"
+if printf '%s' "$(BONSAI_STATE_DIR="$_fg" "$SCRIPTS/bonsai" fastest 2>&1 || true)" | grep -q "bonsai bench"; then
+    pass "the empty fastest state points at bonsai bench"
+else
+    fail "the empty fastest state should name bonsai bench"
+fi
+# It must not be the only mention, or the separate flags look unsupported.
+if printf '%s' "$(BONSAI_STATE_DIR="$_fg" "$SCRIPTS/bonsai" fastest 2>&1 || true)" | grep -q -- "--sweep"; then
+    pass "the empty fastest state still lists the assess.sh flags"
+else
+    fail "the empty fastest state should still list --sweep"
+fi
+rm -rf "$_fg"
+
+# bench must not require a prior measurement: it adds --measure itself, so the
+# sequencing is not the user's problem. Verified by the argument it builds.
+if grep -q '_bench_args=(--measure)' "$SCRIPTS/bonsai"; then
+    pass "bench measures an unmeasured model itself"
+else
+    fail "bench should add --measure for an unmeasured model"
+fi
+# The old failure mode was a die telling the user to run --measure first; the
+# word "measured" still appears in the new message, so assert on the absence
+# of the die's specific shape rather than the word.
+if grep -q 'Run first: ./scripts/assess.sh --measure' "$SCRIPTS/bonsai"; then
+    fail "bench should no longer die with 'run --measure first'"
+else
+    pass "bench no longer dies on an unmeasured model"
+fi
+
+# A typo has the user's intent in hand: name the nearest command.
+_t1="$(printf '%s' "$("$SCRIPTS/bonsai" speeed 2>&1 || true)")"
+if printf '%s' "$_t1" | grep -q "Did you mean 'speed'"; then
+    pass "a near-miss command suggests the intended one"
+else
+    fail "a near-miss command should suggest 'speed'" "got: $_t1"
+fi
+_t2="$(printf '%s' "$("$SCRIPTS/bonsai" tume 2>&1 || true)")"
+if printf '%s' "$_t2" | grep -q "Did you mean 'tune'"; then
+    pass "a near-miss suggests tune as well"
+else
+    fail "a near-miss should suggest 'tune'" "got: $_t2"
+fi
+# A genuinely unknown command still gets the full pointer.
+_t3="$(printf '%s' "$("$SCRIPTS/bonsai" zzzzz 2>&1 || true)")"
+if printf '%s' "$_t3" | grep -q "bonsai help"; then
+    pass "an unknown command still points at help"
+else
+    fail "an unknown command should point at help"
+fi
+
+# tune must name the two steps that make the winner live; a recorded-but-
+# unapplied file is the loss-of-activation slip this prevents.
+if grep -q "bonsai apply" "$SCRIPTS/assess.sh" && grep -q "bonsai restart" "$SCRIPTS/assess.sh"; then
+    pass "tune names apply and restart"
+else
+    fail "tune should name bonsai apply and bonsai restart"
+fi
+
 group "script syntax"
 
 _syntax_fail=""

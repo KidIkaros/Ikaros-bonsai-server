@@ -308,8 +308,15 @@ except Exception:
         if [ -z "$_rows" ]; then
             warn "No measured rows for this backend and release yet."
             echo ""
-            dim "  Measure this machine first:"
-            dim "    ./scripts/assess.sh --measure --speed     # one model, this context"
+            # bench first, because it measures and benchmarks in one command:
+            # the measure-then-speed ordering used to be invisible, and the
+            # assess.sh flags below are for when someone wants the pieces
+            # separately (a sweep, or the full tune matrix).
+            dim "  Create the rows on this machine:"
+            dim "    ./scripts/bonsai bench                 # measure + benchmark, one command"
+            dim "    ./scripts/bonsai bench <model.gguf>    # or a specific model"
+            echo ""
+            dim "  More, when you want them:"
             dim "    ./scripts/assess.sh --sweep               # the offload split curve"
             dim "    ./scripts/assess.sh --tune                # the settings that matter"
             echo ""
@@ -362,9 +369,17 @@ except Exception:
             dim "  Using $(basename "$_model"); pass a path to pick another."
         fi
         [ -f "$_model" ] || die "No such model: $_model"
-        kv_measured "$_model" || die "$(basename "$_model") is not measured.
-       Run first: ./scripts/assess.sh --measure"
-        exec "$SCRIPT_DIR/assess.sh" --measure --speed --model "$_model"
+        # The measurement is a prerequisite, not a separate command to know
+        # about: bench on an unmeasured model measured it here rather than
+        # dying with "run ./scripts/assess.sh --measure" - the ordering was
+        # invisible to a first-time user, who had no reason to think a speed
+        # check needed a prior geometry check.
+        _bench_args=()
+        if ! kv_measured "$_model"; then
+            _bench_args=(--measure)
+            dim "  $(basename "$_model") is not measured yet; measuring first."
+        fi
+        exec "$SCRIPT_DIR/assess.sh" "${_bench_args[@]}" --speed --model "$_model"
         ;;
 
     identity)
@@ -416,6 +431,47 @@ except Exception:
         ;;
 
     *)
+        # A typo has the user's intent in hand: name the nearest command
+        # instead of only pointing at help. Cheapest prevention for the
+        # commonest slip on a CLI.
+        #
+        # The match is edit-distance-based, not prefix-based: "speeed" is
+        # longer than "speed", so a prefix test would miss the most common
+        # typo shape. Substitutions, one insertion and one deletion are all
+        # within one edit; beyond that "did you mean" becomes a guess and the
+        # plain pointer is more honest.
+        suggest_cmd() {
+            local _cmd="$1" _c _diff _i
+            local _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models help"
+            for _c in $_cmds; do
+                _diff="$(awk -v a="$_cmd" -v b="$_c" 'BEGIN {
+                    la = length(a); lb = length(b)
+                    if (la > lb + 1 || lb > la + 1) { print 99; exit }
+                    # Equal length: count substitutions.
+                    if (la == lb) {
+                        d = 0
+                        for (i = 1; i <= la; i++)
+                            if (substr(a, i, 1) != substr(b, i, 1)) d++
+                        print d; exit
+                    }
+                    # One apart: one edit is enough iff every character of the
+                    # shorter appears in order in the longer (subsequence test).
+                    if (la < lb) { s = a; l = b } else { s = b; l = a }
+                    j = 1; skips = 0
+                    for (i = 1; i <= length(l); i++) {
+                        if (j <= length(s) && substr(l, i, 1) == substr(s, j, 1)) j++
+                        else skips++
+                    }
+                    print skips
+                }')"
+                [ "$_diff" -le 1 ] && { printf '%s' "$_c"; return 0; }
+            done
+            return 1
+        }
+        if _near="$(suggest_cmd "$CMD")"; then
+            die "Unknown command '$CMD'. Did you mean '$_near'?
+       All commands: ./scripts/bonsai help"
+        fi
         die "Unknown command '$CMD'. Try: ./scripts/bonsai help"
         ;;
 esac

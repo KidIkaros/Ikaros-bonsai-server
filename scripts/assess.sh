@@ -588,7 +588,14 @@ if [ "$TUNE" = 1 ]; then
             awk -v a="$_btps" -v b="$_base" \
                 'BEGIN { printf "  That is %.0f%% faster than the default.\n", (a/b - 1) * 100 }' >&2
             echo ""
-            info "Serve it with:"
+            # The winner is recorded, not applied: name the two steps that make
+            # it live. Without them a fresh tune ended in a silently-recorded
+            # file, and the user re-ran the server with the old settings.
+            info "Make it the server's setting:"
+            dim "    ./scripts/bonsai apply     # write the winner to .state/service.env"
+            dim "    ./scripts/bonsai restart   # restart with it"
+            echo ""
+            info "Or serve it once, without saving:"
             dim "    $_benv ./scripts/start-server.sh"
         else
             dim "  The gap is within run-to-run noise, so the defaults are fine."
