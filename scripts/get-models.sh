@@ -347,6 +347,24 @@ case "$MODE" in
         _n="$(recommend)"
         list_catalog
         _default="$_n"
+        # Say WHY the default is the default. A catalog of PQ2_0 / PTQ1_0 /
+        # abliterated rows asks a first-time user the one question they came
+        # to the tool to avoid - "which quant fits my card?" - so name the
+        # recommendation and its reason in one line before asking for a number.
+        if [ -n "$_n" ]; then
+            _rec_row="$(row_by_number "$_n" || true)"
+            if [ -n "$_rec_row" ]; then
+                _rec_file="$(printf '%s' "$_rec_row" | cut -d'|' -f2)"
+                _rec_vram="$(printf '%s' "$_rec_row" | cut -d'|' -f4)"
+                if [ "${_rec_vram:-0}" -gt 0 ] 2>/dev/null && [ "${VRAM_GB:-0}" -gt 0 ] 2>/dev/null; then
+                    dim "  Recommended for your ${VRAM_GB} GB card: entry $_n ($_rec_file),"
+                    dim "  it fits with room for the KV cache. Press Enter to take it,"
+                    dim "  or type another entry number."
+                else
+                    dim "  Recommended for this machine: entry $_n ($_rec_file). Press Enter to take it."
+                fi
+            fi
+        fi
         _choice="$(ask "Entry number to download" "$_default")"
         [ -n "$_choice" ] || die "Nothing selected."
         _row="$(row_by_number "$_choice")" || die "No catalog entry number $_choice."

@@ -1374,6 +1374,36 @@ else
 fi
 rm -rf "$_fj"
 
+group "first-run sequence guidance"
+
+# The binary download is one of two prerequisites and the smaller one. Without
+# a forward-pointer a first-timer finishes 180 MB believing they are done, then
+# hits "No .gguf files" with no idea a second, larger download is coming.
+if grep -q "Next: download a model" "$SCRIPTS/fetch-binary.sh"; then
+    pass "fetch-binary points at the model download next"
+else
+    fail "fetch-binary should point at get-models.sh after installing"
+fi
+if grep -q "get-models.sh --recommend" "$SCRIPTS/fetch-binary.sh"; then
+    pass "the forward-pointer names the recommend flag"
+else
+    fail "the forward-pointer should name --recommend"
+fi
+
+# The model picker must explain its default. A catalog of PQ2_0 / PTQ1_0 rows
+# asks a novice the one question they came to avoid - "which quant fits my
+# card?" - so the recommendation and its reason are stated before the prompt.
+if grep -q "Recommended for your" "$SCRIPTS/get-models.sh"; then
+    pass "the picker explains its recommendation"
+else
+    fail "the picker should explain why the default is recommended"
+fi
+if grep -q "fits with room for the KV cache" "$SCRIPTS/get-models.sh"; then
+    pass "the recommendation states the fit reason"
+else
+    fail "the recommendation should say it fits with room for the KV cache"
+fi
+
 group "exit codes"
 
 # A usage error (bad flag, bad value, wrong arg count) must exit 2, distinct
