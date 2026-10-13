@@ -348,6 +348,13 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
   official demo, which also sets up models and binaries. If you want a batteries-included
   demo with Open WebUI and vision, use that. This project is narrower: a headless
   OpenAI-compatible server aimed at pointing an existing client at a local model.
+- [sudoingX/local-ai-on-your-gaming-gpu](https://github.com/sudoingX/local-ai-on-your-gaming-gpu)
+  - the same idea taken deeper on a single model. It hand-tunes serve scripts per VRAM
+  tier, carries a **CUDA PTQ1_0 mat-vec kernel** that measured 1.5x decode on an RTX 3060,
+  uses the model's **MTP head for speculative decoding** (~+24%), supports Windows, and
+  grows a per-card measurement table by PR. Its kernel is CUDA-only, so on AMD this
+  project's ROCm or Vulkan path is what you want; if you are on an RTX card, look there
+  first.
 
 ## Environment variables
 

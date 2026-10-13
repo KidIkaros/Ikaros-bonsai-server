@@ -495,6 +495,39 @@ hf_tree() {
     done
 }
 
+# hf_file_hash REPO FILE - print "SHA256 SIZE" for a file on Hugging Face.
+#
+# Hugging Face serves large files through LFS, and a HEAD on the resolve URL
+# returns the real size in x-linked-size and the SHA256 in x-linked-etag. That
+# is a genuine integrity check, unlike the size the tree API reports.
+hf_file_hash() {
+    command -v curl >/dev/null 2>&1 || return 1
+    local _repo="$1" _file="$2" _h _sha _size
+    _h="$(curl -sIL --max-time 30 "https://huggingface.co/$_repo/resolve/main/$_file" 2>/dev/null || true)"
+    [ -n "$_h" ] || return 1
+
+    _sha="$(printf '%s\n' "$_h" \
+        | sed -n 's/^[Xx]-[Ll]inked-[Ee]tag: *"\{0,1\}\([0-9a-f]\{64\}\)"\{0,1\}.*/\1/p' \
+        | head -1)"
+    _size="$(printf '%s\n' "$_h" \
+        | sed -n 's/^[Xx]-[Ll]inked-[Ss]ize: *\([0-9]*\).*/\1/p' | head -1)"
+
+    # Without an LFS hash there is nothing to verify against.
+    [ -n "$_sha" ] || return 1
+    printf '%s %s' "$_sha" "${_size:-0}"
+}
+
+# file_sha256 FILE - print the SHA256 of a local file, or nothing.
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
+    else
+        return 1
+    fi
+}
+
 # human_size BYTES - format a byte count for display.
 human_size() {
     local _b="${1:-0}"

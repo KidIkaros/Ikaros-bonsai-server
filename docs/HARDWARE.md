@@ -58,6 +58,27 @@ pinned in `scripts/lib/common.sh` as `PRISM_RELEASE`.
 | CPU, x64 | `...-bin-ubuntu-x64.tar.gz` |
 | CPU, arm64 | `...-bin-ubuntu-arm64.tar.gz` |
 
+## AMD without ROCm
+
+You do not have to install ROCm. An AMD card with no ROCm at all is detected as
+**Vulkan** and gets the Vulkan prebuilt, which needs only a Vulkan 1.2 driver:
+
+```bash
+BACKEND=vulkan ./scripts/setup.sh
+```
+
+Detection does this by itself when ROCm is absent, and falls back to CPU if there is no
+Vulkan runtime either. The trade is speed and format support:
+
+- Vulkan has only **partial** `PQ2_0` / `PTQ1_0` support; prefer `Q2_0_g64` or `Q1_0`.
+- A HIP build is faster where it works. One measurement on an RTX 2070 Super put the CUDA
+  build 40% ahead of PrismML's Vulkan build on the same card, so expect a real gap rather
+  than a rounding difference.
+
+For a colleague with a Radeon card and no ROCm, Vulkan is the difference between "works
+after installing a driver" and "works after installing a 4 GB toolkit and matching the
+gfx target".
+
 ## ROCm and gfx targets
 
 HIP binaries are compiled for a fixed list of gfx targets. Detection compares the

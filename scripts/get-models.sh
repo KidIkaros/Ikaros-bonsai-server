@@ -171,13 +171,42 @@ fetch() {
         die "Neither curl nor wget found."
     fi
 
-    # Verify against the size HF reports. A mismatch means a truncated file.
-    _expected="$(hf_tree "$_repo" | awk -v f="$_file" '$2 == f { print $1 }' | head -1)"
-    if [ -n "$_expected" ] && [ "$_expected" != "0" ]; then
-        _got="$(stat -c '%s' "$_dest" 2>/dev/null || stat -f '%z' "$_dest")"
-        if [ "$_got" != "$_expected" ]; then
-            warn "Size mismatch for $_file (expected $_expected, got $_got)."
-            warn "The file may be incomplete. Delete it and re-run to resume."
+    # Verify the download. A SHA256 from Hugging Face is the real check: a
+    # truncated or corrupted file is removed rather than left to fail later at
+    # model load, which is where it would otherwise surface.
+    _hash="$(hf_file_hash "$_repo" "$_file" || true)"
+    if [ -n "$_hash" ]; then
+        _want="$(printf '%s' "$_hash" | cut -d' ' -f1)"
+        _want_size="$(printf '%s' "$_hash" | cut -d' ' -f2)"
+        _got_size="$(stat -c '%s' "$_dest" 2>/dev/null || stat -f '%z' "$_dest")"
+
+        if [ "${_want_size:-0}" != "0" ] && [ "$_got_size" != "$_want_size" ]; then
+            rm -f "$_dest"
+            die "Size mismatch for $_file: expected $_want_size bytes, got $_got_size.
+       The partial file was removed; re-run to download it again."
+        fi
+
+        _got="$(file_sha256 "$_dest" || true)"
+        if [ -z "$_got" ]; then
+            warn "No sha256 tool available, so $_file could only be size-checked."
+        elif [ "$_want" != "$_got" ]; then
+            rm -f "$_dest"
+            die "SHA256 mismatch for $_file.
+       expected $_want
+       got      $_got
+       The file was removed; re-run to download it again."
+        else
+            info "SHA256 verified."
+        fi
+    else
+        # No LFS hash (small files are stored directly), so fall back to size.
+        _expected="$(hf_tree "$_repo" | awk -v f="$_file" '$2 == f { print $1 }' | head -1)"
+        if [ -n "$_expected" ] && [ "$_expected" != "0" ]; then
+            _got="$(stat -c '%s' "$_dest" 2>/dev/null || stat -f '%z' "$_dest")"
+            if [ "$_got" != "$_expected" ]; then
+                warn "Size mismatch for $_file (expected $_expected, got $_got)."
+                warn "The file may be incomplete. Delete it and re-run to resume."
+            fi
         fi
     fi
 

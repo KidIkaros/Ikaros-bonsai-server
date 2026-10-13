@@ -442,6 +442,28 @@ assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
 
 rm -rf "$_tmpdir"
 
+group "download integrity"
+
+_tmpdir="$(mktemp -d)"
+printf 'abc' > "$_tmpdir/abc"
+# The well-known SHA256 of the three bytes "abc".
+assert_eq "file_sha256 matches a known value" \
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" \
+    "$(file_sha256 "$_tmpdir/abc")"
+# A different file must not collide, or verification would be worthless.
+printf 'abd' > "$_tmpdir/abd"
+if [ "$(file_sha256 "$_tmpdir/abc")" = "$(file_sha256 "$_tmpdir/abd")" ]; then
+    fail "different content must produce a different hash"
+else
+    pass "different content produces a different hash"
+fi
+if file_sha256 "$_tmpdir/does-not-exist" >/dev/null 2>&1; then
+    fail "hashing a missing file should fail"
+else
+    pass "hashing a missing file fails cleanly"
+fi
+rm -rf "$_tmpdir"
+
 group "auto KV type"
 
 # kv_type_auto picks the fastest type that still fits the largest installed
@@ -626,6 +648,17 @@ if [ "$WITH_NETWORK" = 1 ]; then
         pass "Hugging Face API reachable"
     else
         fail "Hugging Face API not reachable"
+    fi
+
+    # The hash endpoint is what makes download verification possible; if HF
+    # stops exposing it, verification silently degrades to a size check.
+    _h="$(hf_file_hash prism-ml/Bonsai-1.7B-gguf Bonsai-1.7B-Q1_0.gguf || true)"
+    _sha="$(printf '%s' "$_h" | cut -d' ' -f1)"
+    _size="$(printf '%s' "$_h" | cut -d' ' -f2)"
+    if [ "${#_sha}" = "64" ] && [ "$_size" = "248302272" ]; then
+        pass "Hugging Face exposes a SHA256 and size for verification"
+    else
+        fail "could not read the HF SHA256/size" "got '$_h'"
     fi
 fi
 
