@@ -496,38 +496,170 @@ coverage_values() {
     awk -F'\t' -v d="$1" '$1 == d { print $2 }' "$COVERAGE_CACHE"
 }
 
-# speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] - measured tokens per second.
+# speed_get / speed_set / speed_rows - the measured speed cache.
 #
-# Keyed by backend and release as well as model and cache type. A speed measured
-# on one backend does not transfer to another: the same model measured 36.1 on
-# ROCm and 30.4 on Vulkan. Without the backend in the key, switching backends
-# reported the old number as if it were current.
+# Keyed by backend and release as well as model and cache type: a speed measured
+# on one backend does not transfer to another (the same model measured 36.1 on
+# ROCm and 30.4 on Vulkan), and without the backend in the key, switching
+# backends reported the old number as if it were current.
+#
+# speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] [NGL] - measured tokens per second.
+# With NGL given, the row measured at that offload level; without it, the first
+# matching row wins, which is how this reader has always behaved.
 speed_get() {
     [ -f "$SPEED_CACHE" ] || return 1
-    local _key _b _rel
+    local _key _b _rel _ngl
     _key="$(basename "$1")"
     _b="${4:-${BACKEND:-unknown}}"
     _rel="${5:-${PRISM_RELEASE:-unknown}}"
-    awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
-        '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    _ngl="${6:-}"
+    if [ -n "$_ngl" ]; then
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" -v g="$_ngl" \
+            '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r && $7 == g { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    else
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
+            '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    fi
 }
 
-# speed_set MODEL CELLS TYPE TPS [BACKEND] [RELEASE] - record a measurement.
+# speed_set MODEL CELLS TYPE TPS [BACKEND] [RELEASE] [NGL] [ACCEPTANCE] - record a measurement.
+# The optional NGL records the offload level the measurement was taken at: the
+# sweep measures partial offloads, and a tok/s number is meaningless for
+# reproduction without the split that produced it. NGL is part of the key, so
+# the same model at a different split is a different row, not a replacement.
+# ACCEPTANCE is the draft acceptance rate when the run used a spec type, empty
+# otherwise - a speed row without its acceptance is not reproducible advice,
+# since the same tok/s with 0.05 acceptance means the drafts are not landing.
+# Rows written before these columns existed stay valid - readers take what
+# columns they need.
 speed_set() {
     mkdir -p "$STATE_DIR"
-    local _key _tmp _b _rel
+    local _key _tmp _b _rel _ngl _acc
     _key="$(basename "$1")"
     _b="${5:-${BACKEND:-unknown}}"
     _rel="${6:-${PRISM_RELEASE:-unknown}}"
+    _ngl="${7:-}"
+    _acc="${8:-}"
     _tmp="$SPEED_CACHE.tmp"
     if [ -f "$SPEED_CACHE" ]; then
-        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
-            '!($1 == k && $2 == c && $3 == t && $4 == b && $5 == r)' "$SPEED_CACHE" > "$_tmp"
+        # $7 and $8 (offload level, acceptance) are empty in rows written
+        # before the columns existed, so empty values match them and set
+        # values do not.
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" -v g="$_ngl" \
+            '!($1 == k && $2 == c && $3 == t && $4 == b && $5 == r && $7 == g)' "$SPEED_CACHE" > "$_tmp"
     else
         : > "$_tmp"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$_b" "$_rel" "$4" >> "$_tmp"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_key" "$2" "$3" "$_b" "$_rel" "$4" "$_ngl" "$_acc" >> "$_tmp"
     mv "$_tmp" "$SPEED_CACHE"
+}
+
+# speed_rows BACKEND [RELEASE] - the measured rows for one backend and release,
+# exactly as they sit in the cache. Columns: model, cells, type, backend,
+# release, tok/s, offload level, draft acceptance (both empty when not
+# recorded). Ranking is the caller's job, so the cache stays a plain record
+# with one writer per fact.
+speed_rows() {
+    [ -f "$SPEED_CACHE" ] || return 0
+    local _b="$1" _r="${2:-${PRISM_RELEASE:-unknown}}"
+    awk -F'\t' -v b="$_b" -v r="$_r" '$4 == b && $5 == r' "$SPEED_CACHE"
+}
+
+# ---------------------------------------------------------------------------
+# Speculative decoding selection (speed-first)
+# ---------------------------------------------------------------------------
+
+# MTP speculative decoding is the third-biggest speed lever: +23-33% on
+# Turing/Ampere with a grafted head, +15% on Vulkan at n-max 2, +6% on ROCm at
+# n-max 1. A *-mtp.gguf carries the head inside the file, so it needs no second
+# file and is on by default whenever the installed models carry it.
+
+# file_has_mtp_head FILE - succeed when the filename marks a grafted MTP head.
+# "lean" files (the embedding weights stripped, what fits an 8 GB card) carry
+# the head just as the fat file does, so both match.
+file_has_mtp_head() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        *mtp*) return 0 ;;
+    esac
+    return 1
+}
+
+# spec_nmax_for BACKEND - tokens the MTP head should draft on this backend.
+# The window is backend-specific and measured, not assumed: Vulkan pays for a
+# wider window (54.9 tok/s at n-max 2 against 47.7 at 1, RX 9060 XT), while
+# ROCm and CUDA do not - n-max 2 measured slower than the baseline there.
+# CPU prints 0, which callers must read as "do not enable": without a GPU the
+# verification pass costs more than the drafts save.
+spec_nmax_for() {
+    case "$1" in
+        vulkan)    printf '2' ;;
+        rocm|cuda) printf '1' ;;
+        *)         printf '0' ;;
+    esac
+}
+
+# bench_row CARD BACKEND RELEASE FILE NGL KV CTX SPEC TPS - one sweeps/-style
+# markdown row. Every number names its card, build and file so it can be
+# reproduced or contested; printed, never asserted.
+bench_row() {
+    printf '| %s | %s | %s | %s | ngl %s | %s KV | %s | %s | %s tok/s |\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+}
+
+# ---------------------------------------------------------------------------
+# Draft acceptance (spec-decode effectiveness)
+# ---------------------------------------------------------------------------
+
+# log_draft_acceptance LOG - the draft acceptance rate from a llama-server log,
+# as a plain number, or nothing when the run drafted nothing.
+#
+# The number decides whether a spec type is doing anything: below ~0.10 the
+# drafts are being rejected often enough that the verify passes cost more than
+# the drafts save (community heuristic, PR #19164 comment), and on the PrismML
+# ternary models n-gram spec reports no draft line at all (issue #203), which
+# is the signal to leave it off rather than assume it worked.
+log_draft_acceptance() {
+    [ -f "$1" ] || return 1
+    # llama-server prints "draft acceptance rate = 0.70312 (90 accepted / 128
+    # generated)" once per completed generation. Take the last one: it covers
+    # the whole response, where the first would cover only the opening tokens.
+    grep -aoE 'draft acceptance rate = [0-9.]+' "$1" 2>/dev/null |
+        grep -oE '[0-9.]+' | tail -1
+}
+
+# acceptance_verdict RATE - "works" / "weak" / "no drafts". The thresholds are
+# the community rule of thumb, not a measured cliff on this hardware: 0.10 is
+# where PR #19164 says a speedup starts, so anything under it is reported as
+# weak rather than silently treated as fine.
+acceptance_verdict() {
+    local _r="${1:-}"
+    [ -n "$_r" ] || { printf 'no drafts'; return 0; }
+    if awk -v r="$_r" 'BEGIN { exit !(r >= 0.10) }'; then
+        printf 'works'
+    else
+        printf 'weak'
+    fi
+}
+
+# first_model_id URL - the id of the first model a llama-server reports, or
+# nothing when it reports none. One place parses /v1/models: router mode
+# rejects a request that does not name a model, so every caller that talks to
+# the API needs this and should not each re-derive the parse.
+#
+# The response is one JSON line with every model in it, so the match must not
+# be greedy: `.*"id":"` before the capture would match the LAST id on the line
+# and report a model the caller did not pick. Strip everything through the
+# first marker instead.
+first_model_id() {
+    local _url="${1%/}"
+    command -v curl >/dev/null 2>&1 || return 1
+    # llama.cpp answers /v1/models as one line holding every model. A greedy
+    # `.*"id":"` in sed captures the LAST id on that line, so a server with
+    # two models would report the wrong one. Split the objects apart first,
+    # one per line, then take the first id found.
+    curl -s --max-time 5 "$_url/v1/models" 2>/dev/null |
+        tr ',' '\n' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1
 }
 
 # kv_placement LAYERS NGL WEIGHTS_GB KV_GB - print "VRAM RAM" in GB.

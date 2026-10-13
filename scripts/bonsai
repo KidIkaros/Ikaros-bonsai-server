@@ -9,6 +9,8 @@
 #   ./scripts/bonsai show           the current settings
 #   ./scripts/bonsai set ctx 32768  change a setting
 #   ./scripts/bonsai speed          quick tokens/sec check against the running server
+#   ./scripts/bonsai fastest        every measured configuration, fastest first
+#   ./scripts/bonsai bench [model]  measure a model on this machine, one row
 #   ./scripts/bonsai tune           find the fastest settings on this machine
 #   ./scripts/bonsai apply          persist the last tune's winner to settings
 #   ./scripts/bonsai assess         what fits, and how the KV type changes it
@@ -211,7 +213,7 @@ except Exception:
         VAL="${2:-}"
         if [ -z "$KEY" ] || [ -z "$VAL" ]; then
             die "Usage: ./scripts/bonsai set <key> <value>
-       keys: port, ctx, ngl, kv, models"
+       keys: port, ctx, ngl, kv, threads, models, moe-cache-mib"
         fi
 
         case "$(printf '%s' "$KEY" | tr '[:upper:]' '[:lower:]')" in
@@ -221,12 +223,14 @@ except Exception:
             threads|cpu-threads) VAR="BONSAI_THREADS" ;;
             kv|kv-type)  VAR="BONSAI_KV_TYPE" ;;
             models|models-dir) VAR="BONSAI_MODELS_DIR" ;;
+            moe-cache-mib|moe-cache) VAR="BONSAI_MOE_CACHE_MIB" ;;
+            spec-type)   VAR="BONSAI_SPEC_TYPE" ;;
             BONSAI_*)    VAR="$KEY" ;;
-            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models" ;;
+            *) die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib" ;;
         esac
 
         case "$VAR" in
-            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL|BONSAI_THREADS)
+            BONSAI_CTX|BONSAI_PORT|BONSAI_NGL|BONSAI_THREADS|BONSAI_MOE_CACHE_MIB)
                 case "$VAL" in ''|*[!0-9]*) die "$KEY needs a number, got '$VAL'." ;; esac ;;
             BONSAI_KV_TYPE)
                 case "$VAL" in
@@ -272,6 +276,10 @@ except Exception:
         [ -n "$_model" ] || die "The server reported no models."
         step "Speed check"
         dim "  One short generation against the running server."
+        # Router mode rejects a request that does not name a model, so the id
+        # from /v1/models goes into the payload - without it every check fails
+        # with "model name is missing from the request", which reads as a
+        # broken server rather than a missing field.
         _tps="$(curl -s --max-time 300 "http://127.0.0.1:$BONSAI_PORT/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":64,"temperature":0.7}' "$_model")" 2>/dev/null |
@@ -287,6 +295,64 @@ except Exception:
         fi
         info "$_tps tok/s on $_model"
         dim "  ./scripts/bonsai tune  to see whether other settings are faster"
+        ;;
+
+    fastest)
+        load_settings
+        ensure_detect
+        step "Fastest known configuration"
+        printf '  backend %s   release %s   card %s\n\n' \
+            "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}" "${GPU_NAME:-unknown}"
+        _rows="$(speed_rows "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}")"
+        if [ -z "$_rows" ]; then
+            warn "No measured rows for this backend and release yet."
+            echo ""
+            dim "  Measure this machine first:"
+            dim "    ./scripts/assess.sh --measure --speed     # one model, this context"
+            dim "    ./scripts/assess.sh --sweep               # the offload split curve"
+            dim "    ./scripts/assess.sh --tune                # the settings that matter"
+            echo ""
+            exit 0
+        fi
+        printf '  %8s  %-34s %-8s %8s  %s\n' "tok/s" "model" "offload" "draft" "verdict"
+        printf '  %s\n' "--------------------------------------------------------------------------------------"
+        printf '%s\n' "$_rows" | sort -rn |
+            while IFS=$'\t' read -r _m _c _t _b _r _tps _ngl _acc; do
+                printf '  %8s  %-34s %-8s %8s  %s\n' \
+                    "$_tps" "${_m:0:34}" "${_ngl:-?}" \
+                    "${_acc:-(none)}" "$(acceptance_verdict "${_acc:-}")"
+            done
+        echo ""
+        # The disable rule: below 0.10 the drafts are rejected often enough
+        # that the verify passes cost more than they save (PR #19164), and on
+        # the ternary models a spec type reports no draft line at all - both
+        # are "this lever is not paying here", said plainly.
+        if printf '%s\n' "$_rows" | awk -F'\t' '$8 != "" && $8 < 0.10' | grep -q .; then
+            warn "Some rows have draft acceptance below 0.10 - the drafts are not landing."
+            dim "  A spec type that does not pay here is slower than no spec type."
+            dim "  Serve without it: BONSAI_SPEC_TYPE=none ./scripts/start-server.sh"
+            echo ""
+        fi
+        dim "  Every number is measured on this backend and release, never estimated."
+        dim "  The offload level and draft acceptance are recorded with the"
+        dim "  measurement: a tok/s row without them does not reproduce."
+        ;;
+
+    bench)
+        load_settings
+        ensure_detect
+        _model="${1:-}"
+        if [ -z "$_model" ]; then
+            _first="$(find "$MODELS_DIR" -maxdepth 1 -name '*.gguf' \
+                -not -name '*mmproj*' -not -name 'kv-mean-center-*' 2>/dev/null | sort | head -1)"
+            [ -n "$_first" ] || die "No models in $MODELS_DIR. Run: ./scripts/get-models.sh"
+            _model="$_first"
+            dim "  Using $(basename "$_model"); pass a path to pick another."
+        fi
+        [ -f "$_model" ] || die "No such model: $_model"
+        kv_measured "$_model" || die "$(basename "$_model") is not measured.
+       Run first: ./scripts/assess.sh --measure"
+        exec "$SCRIPT_DIR/assess.sh" --measure --speed --model "$_model"
         ;;
 
     tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;

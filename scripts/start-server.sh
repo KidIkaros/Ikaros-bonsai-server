@@ -19,11 +19,17 @@
 #   BONSAI_DRAFT_MODEL=path a *-dspark-* drafter, for speculative decoding
 #   BONSAI_SPEC_TYPE=name   speculative decoding type; draft-mtp uses the MTP
 #                           head inside a *-mtp.gguf, no second file needed
+#   BONSAI_SPEC_STACK=upstream  keep llama.cpp's default ngram-mod alongside ours
+#                           (default: bonsai, which removes ngram-mod first)
 #   BONSAI_SPEC_DRAFT_N_MAX tokens to draft (default 1; Vulkan prefers 2,
 #                           ROCm prefers 1 on this card - measure both)
 #   BONSAI_SPEC_DRAFT_P_MIN draft probability floor (default 0.0 = disabled;
 #                           0.8 lets deeper n-max pay off, see RESEARCH-2026-10)
+#   BONSAI_HOST=127.0.0.1    listening address; 0.0.0.0 to serve other machines
 #   BONSAI_MODELS_DIR=path  models directory
+#   BONSAI_MOE_CACHE_MIB=N GPU cache for CPU-resident MoE experts (+1.5-1.85x
+#                           decode, needs a source build; ignored with a warning
+#                           when the installed binary has no --moe-cache-mib)
 #   BONSAI_EXTRA_ARGS="..." extra llama-server flags
 
 set -euo pipefail
@@ -41,7 +47,7 @@ while [ $# -gt 0 ]; do
         --kv-type)    export BONSAI_KV_TYPE="${2:-}"; shift ;;
         --kv-type-k)  export BONSAI_KV_TYPE_K="${2:-}"; shift ;;
         --kv-type-v)  export BONSAI_KV_TYPE_V="${2:-}"; shift ;;
-        -h|--help)    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
     shift
@@ -159,12 +165,71 @@ fi
 # Speculative decoding. Either a separate drafter via BONSAI_DRAFT_MODEL, or a
 # spec type such as draft-mtp, which uses the MTP head already inside the model
 # file and needs no second file.
+#
+# Speed-first default: when the models directory holds a *-mtp.gguf and nothing
+# was set explicitly, enable draft-mtp. It is the third-biggest measured lever
+# (+23-33% Turing/Ampere with a grafted head, +15% on Vulkan, +6% on ROCm), and
+# an explicit BONSAI_SPEC_TYPE=none still turns it off. The draft window is picked
+# per backend by spec_nmax_for, because the optimal window is measured and
+# backend-specific (Vulkan pays for 2, ROCm/CUDA do not).
+#
+# ngram-mod is the upstream default spec type since PR #28391, and --spec-type is
+# ADDITIVE to it: passing --spec-type draft-mtp would otherwise get
+# [ngram-mod, draft-mtp] and the two drafters would fight over the same verify
+# batch. Since ngram-mod silently no-ops on the PrismML ternary models (issue
+# #203: accepted, zero log lines, draft_n null, decode identical to none), it is
+# explicitly removed here so the measured MTP path is what runs. BONSAI_SPEC_STACK
+# overrides both sides for users who want the upstream stack.
 DRAFT_ARGS=()
 if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
     [ -f "$BONSAI_DRAFT_MODEL" ] ||
         die "Draft model not found: $BONSAI_DRAFT_MODEL
        Set BONSAI_DRAFT_MODEL to a GGUF, or unset it to disable drafting."
     DRAFT_ARGS+=(--model-draft "$BONSAI_DRAFT_MODEL")
+fi
+
+# mtp_file_for_router - the *-mtp.gguf to load on demand for draft-mtp. Router
+# mode has no single model pinned, so the head must be requested per call; when
+# more than one MTP file is installed the loader needs to be told which one.
+# The fat (non-lean) file wins when present: it carries the full MTP head, and
+# on cards with room it is the one whose acceptance rates were measured.
+mtp_file_for_router() {
+    local _fat="" _lean=""
+    while IFS= read -r _f; do
+        case "$(printf '%s' "$(basename "$_f")" | tr '[:upper:]' '[:lower:]')" in
+            *lean*) _lean="$_f" ;;
+            *)      _fat="$_f" ;;
+        esac
+    done < <(find "$MODELS_DIR" -maxdepth 1 -name '*.gguf' 2>/dev/null |
+             while IFS= read -r _f; do
+                 file_has_mtp_head "$_f" && printf '%s\n' "$_f"
+             done | sort)
+    printf '%s' "${_fat:-$_lean}"
+}
+
+if [ -z "${BONSAI_SPEC_TYPE:-}" ]; then
+    _mtp_file="$(mtp_file_for_router)"
+    if [ -n "$_mtp_file" ]; then
+        BONSAI_SPEC_TYPE="draft-mtp"
+        info "MTP head found in $(basename "$_mtp_file"); enabling draft-mtp."
+    fi
+fi
+
+# --spec-type is additive to the upstream default (ngram-mod, PR #28391), so
+# unless it is explicitly removed the binary runs [ngram-mod, draft-mtp] and the
+# two drafters share one verify batch. BONSAI_SPEC_STACK=upstream keeps the
+# upstream stack for users who want it; otherwise ngram-mod is removed first,
+# and any explicit BONSAI_SPEC_TYPE is added on top.
+if [ "${BONSAI_SPEC_STACK:-bonsai}" != "upstream" ]; then
+    DRAFT_ARGS+=(--no-spec-type ngram-mod)
+fi
+
+if [ -n "${BONSAI_SPEC_TYPE:-}" ] && [ "${_BONSAI_FROM_ENV:-}" != *"BONSAI_SPEC_DRAFT_N_MAX"* ]; then
+    # A backend-tuned default, only when the caller did not set one: on Vulkan
+    # n-max 2 measured fastest, on ROCm/CUDA n-max 2 measured slower than the
+    # baseline, so the value that ships is the measured winner per backend.
+    _nmax="$(spec_nmax_for "$BACKEND")"
+    [ "$_nmax" -gt 0 ] && BONSAI_SPEC_DRAFT_N_MAX="$_nmax"
 fi
 if [ -n "${BONSAI_SPEC_TYPE:-}" ]; then
     case "$BONSAI_SPEC_TYPE" in
@@ -197,6 +262,26 @@ esac
 # shellcheck disable=SC2206
 EXTRA_ARGS=(${BONSAI_EXTRA_ARGS:-})
 
+# MoE expert cache (--moe-cache-mib): keeps hot CPU-resident experts in a GPU
+# cache, worth 1.5-1.85x decode on models split across VRAM and RAM (PR #29887,
+# measured RTX 4090 1.57-1.62x, RTX 5090 1.77x). It is newer than the pinned
+# prebuilt, so the flag is passed only when the binary actually supports it -
+# an unknown flag aborts llama-server at startup.
+MOE_CACHE_ARGS=()
+if [ -n "${BONSAI_MOE_CACHE_MIB:-}" ]; then
+    case "$BONSAI_MOE_CACHE_MIB" in
+        ''|*[!0-9]*) die "BONSAI_MOE_CACHE_MIB must be a number, got '$BONSAI_MOE_CACHE_MIB'.
+       Example: ./scripts/bonsai set moe-cache-mib 2048" ;;
+    esac
+    if "$SERVER_BIN" --help 2>&1 | grep -q -- '--moe-cache-mib'; then
+        MOE_CACHE_ARGS=(--moe-cache-mib "$BONSAI_MOE_CACHE_MIB")
+        info "MoE cache : ${BONSAI_MOE_CACHE_MIB} MiB (needs a build newer than $PRISM_RELEASE)"
+    else
+        warn "BONSAI_MOE_CACHE_MIB set, but this build has no --moe-cache-mib."
+        dim "  A source build gets it: ./scripts/build-from-source.sh"
+    fi
+fi
+
 # Threads come from the setting (or `bonsai set threads`), falling back to all
 # cores. Validated here so a bad value fails with a clear message instead of a
 # cryptic llama-server error.
@@ -209,7 +294,7 @@ CMD=(
     "$SERVER_BIN"
     --models-dir "$MODELS_DIR"
     --models-max 1
-    --host 0.0.0.0
+    --host "${BONSAI_HOST:-127.0.0.1}"
     --port "$BONSAI_PORT"
     --ctx-size "$BONSAI_CTX"
     --threads "$BONSAI_THREADS"
@@ -219,6 +304,7 @@ CMD=(
     "${KV_ARGS[@]}"
     "${DRAFT_ARGS[@]}"
     "${NGL_ARGS[@]}"
+    "${MOE_CACHE_ARGS[@]}"
     "${EXTRA_ARGS[@]}"
 )
 
@@ -231,7 +317,11 @@ if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
     info "Draft model : $(basename "$BONSAI_DRAFT_MODEL")  (speculative decoding)"
 fi
 if [ -n "${BONSAI_SPEC_TYPE:-}" ] && [ "$BONSAI_SPEC_TYPE" != "none" ]; then
-    info "Spec decode : $BONSAI_SPEC_TYPE, n-max $BONSAI_SPEC_DRAFT_N_MAX"
+    if [ "$BONSAI_SPEC_TYPE" = "draft-mtp" ] && [ -n "${_mtp_file:-}" ]; then
+        info "Spec decode : draft-mtp from $(basename "$_mtp_file"), n-max $BONSAI_SPEC_DRAFT_N_MAX"
+    else
+        info "Spec decode : $BONSAI_SPEC_TYPE, n-max $BONSAI_SPEC_DRAFT_N_MAX"
+    fi
 fi
 if [ -n "${_auto_note:-}" ]; then
     info "KV cache    : $(kv_type_effective)  (auto: $_auto_reason)"
@@ -287,12 +377,23 @@ if [ "$BACKGROUND" = 1 ]; then
            curl -sf --max-time 5 "http://127.0.0.1:$BONSAI_PORT/health" >/dev/null 2>&1; then
             # /health only proves the process is up. In router mode the model
             # load happens per-request, and that is what hangs on a wedged
-            # runtime, so verify one real generation too.
+            # runtime, so verify one real generation too. The model id must be
+            # named: router mode rejects a request without one with "model
+            # name is missing from the request", which would make a perfectly
+            # healthy server look broken here.
+            _deep_model="$(first_model_id "http://127.0.0.1:$BONSAI_PORT")"
+            if [ -z "$_deep_model" ]; then
+                # No model id resolvable: the router reported no models. The
+                # server is up, so treat it as healthy and let the first real
+                # request surface any loading problem.
+                _ok=1
+                break
+            fi
             _deep_rc=0
             _deep="$(curl -sf --max-time 90 \
                 "http://127.0.0.1:$BONSAI_PORT/v1/chat/completions" \
                 -H 'Content-Type: application/json' \
-                -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":0}' \
+                -d "{\"model\":\"$_deep_model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0}" \
                 2>/dev/null)" || _deep_rc=$?
             if [ "$_deep_rc" = 0 ] && [ -n "$_deep" ]; then
                 _ok=1

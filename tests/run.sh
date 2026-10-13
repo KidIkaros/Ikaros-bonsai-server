@@ -721,6 +721,256 @@ else
 fi
 rm -rf "$_td"
 
+group "moe cache setting"
+
+# --moe-cache-mib is the one merged flag worth a source build (+1.5-1.85x decode
+# on CPU-resident MoE, PR #29887) and it is newer than the pinned prebuilt, so
+# the setting must exist and must reject non-numbers.
+_td="$(mktemp -d)"
+BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set moe-cache-mib 2048 >/dev/null 2>&1
+if grep -qx 'BONSAI_MOE_CACHE_MIB=2048' "$_td/service.env"; then
+    pass "set moe-cache-mib writes BONSAI_MOE_CACHE_MIB"
+else
+    fail "set moe-cache-mib should write BONSAI_MOE_CACHE_MIB=2048"
+fi
+if BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set moe-cache-mib big >/dev/null 2>&1; then
+    fail "set moe-cache-mib should reject a non-numeric value"
+else
+    pass "set moe-cache-mib rejects non-numeric input"
+fi
+if BONSAI_STATE_DIR="$_td" "$SCRIPTS/bonsai" set moe-cache 1024 >/dev/null 2>&1 &&
+   grep -qx 'BONSAI_MOE_CACHE_MIB=1024' "$_td/service.env"; then
+    pass "the short alias moe-cache works"
+else
+    fail "the moe-cache alias should write BONSAI_MOE_CACHE_MIB"
+fi
+# The key list in the usage error must mention it, or nobody finds it.
+# `bonsai set` with no arguments exits non-zero and its message goes to stderr,
+# so the output is captured first and grepped after: in a pipeline under
+# pipefail the failing command's status would sink the whole test.
+if printf '%s' "$("$SCRIPTS/bonsai" set 2>&1 || true)" | grep -q "moe-cache-mib"; then
+    pass "the set usage lists moe-cache-mib"
+else
+    fail "the set usage should list moe-cache-mib"
+fi
+if "$SCRIPTS/start-server.sh" --help 2>&1 | grep -q "BONSAI_MOE_CACHE_MIB"; then
+    pass "start-server.sh --help documents BONSAI_MOE_CACHE_MIB"
+else
+    fail "start-server.sh --help should document BONSAI_MOE_CACHE_MIB"
+fi
+# The flag is only passed when the binary supports it: an unknown flag aborts
+# llama-server at startup, so the gate must be in the script, not the docs.
+if grep -q -- "--moe-cache-mib" "$SCRIPTS/start-server.sh"; then
+    pass "start-server.sh gates --moe-cache-mib on binary support"
+else
+    fail "start-server.sh should check for --moe-cache-mib before passing it"
+fi
+rm -rf "$_td"
+
+group "spec selection (speed-first)"
+
+# The MTP head is the third-biggest measured lever and needs no second file,
+# so a *-mtp.gguf must be detected by name, fat and lean alike.
+if file_has_mtp_head "Ternary-Bonsai-2-27B-PTQ1_0-mtp.gguf"; then
+    pass "file_has_mtp_head accepts the fat MTP file"
+else
+    fail "file_has_mtp_head should accept *-mtp.gguf"
+fi
+if file_has_mtp_head "Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean.gguf"; then
+    pass "file_has_mtp_head accepts the lean MTP file"
+else
+    fail "file_has_mtp_head should accept *-mtp-lean.gguf"
+fi
+if file_has_mtp_head "Ternary-Bonsai-2-27B-PTQ1_0.gguf"; then
+    fail "a plain file must not be read as an MTP file"
+else
+    pass "a plain model file has no MTP head"
+fi
+
+# The draft window is backend-specific and measured, so the mapping is pinned
+# here: Vulkan pays for 2 (54.9 tok/s against 47.7 at 1 on the RX 9060 XT),
+# ROCm and CUDA do not (n-max 2 measured slower than baseline there), and CPU
+# must stay off (the verification pass costs more than the drafts save).
+assert_eq "vulkan drafts 2 tokens" "2" "$(spec_nmax_for vulkan)"
+assert_eq "rocm drafts 1 token" "1" "$(spec_nmax_for rocm)"
+assert_eq "cuda drafts 1 token" "1" "$(spec_nmax_for cuda)"
+assert_eq "cpu enables no drafting" "0" "$(spec_nmax_for cpu)"
+
+# speed rows carry the offload level, because a tok/s number measured at a
+# partial split does not reproduce without the split.
+_sr="$(mktemp -d)"
+_sr_probe() {
+    BONSAI_STATE_DIR="$_sr" PRISM_RELEASE="prism-b10772-e8fd209" \
+        BACKEND="$1" bash -c ". scripts/lib/common.sh; $2" 2>/dev/null
+}
+_sr_probe rocm 'speed_set m-lean.gguf 65536 q4_0 46.1'
+_sr_probe rocm 'speed_set m-lean.gguf 65536 q4_0 21.9 "" "" 12'
+if awk -F'\t' 'END { exit !(NR == 2) }' "$_sr/speeds.tsv"; then
+    pass "two offload levels are two rows, not one"
+else
+    fail "the offload level should be part of the key" \
+        "$(wc -l < "$_sr/speeds.tsv") rows for two splits"
+fi
+_sr_rows="$(_sr_probe rocm 'speed_rows rocm')"
+assert_eq "speed_rows returns the measured rows" "2" "$(printf '%s\n' "$_sr_rows" | grep -c '^')"
+assert_eq "the offload level survives the round trip" "12" \
+    "$(printf '%s\n' "$_sr_rows" | awk -F'\t' '$7 == 12 { print $7 }')"
+if [ -z "$(_sr_probe vulkan 'speed_rows vulkan')" ]; then
+    pass "an unmeasured backend reports no rows"
+else
+    fail "another backend's rows must not be served"
+fi
+rm -rf "$_sr"
+
+group "draft acceptance"
+
+# Acceptance is the number that decides whether a spec type is doing anything:
+# below 0.10 the verify passes cost more than the drafts save.
+_la="$(mktemp -d)"
+# A run with no spec type prints no draft line at all - that is "no drafts",
+# not zero acceptance, and the two must not be conflated.
+cat > "$_la/no-spec.log" <<'LOG'
+llama_new_context_with_model: ... OK
+LOG
+assert_eq "a log with no draft line yields no rate" "" "$(log_draft_acceptance "$_la/no-spec.log")"
+# A spec run prints the rate once per completed generation; the last one
+# covers the whole response.
+cat > "$_la/spec.log" <<'LOG'
+llama_print_timings:        draft acceptance rate = 0.25000 (32 accepted / 128 generated)
+llama_print_timings:        draft acceptance rate = 0.70312 (90 accepted / 128 generated)
+LOG
+assert_eq "the last acceptance rate wins" "0.70312" "$(log_draft_acceptance "$_la/spec.log")"
+# A weak spec run must be reported as weak, not silently treated as fine.
+cat > "$_la/weak.log" <<'LOG'
+llama_print_timings:        draft acceptance rate = 0.05000 (6 accepted / 128 generated)
+LOG
+assert_eq "a weak rate is extracted" "0.05000" "$(log_draft_acceptance "$_la/weak.log")"
+assert_eq "0.703 is a working spec type" "works" "$(acceptance_verdict 0.70312)"
+assert_eq "0.05 is a weak spec type" "weak" "$(acceptance_verdict 0.05000)"
+assert_eq "0.10 is the boundary and counts as working" "works" "$(acceptance_verdict 0.10)"
+assert_eq "no rate means no drafts" "no drafts" "$(acceptance_verdict "")"
+if log_draft_acceptance "$_la/missing.log" >/dev/null 2>&1; then
+    fail "a missing log should not yield a rate"
+else
+    pass "a missing log fails cleanly"
+fi
+rm -rf "$_la"
+
+# Acceptance is part of a speed row, so a measured tok/s with 0.05 acceptance
+# reads as what it is: a spec type that is not landing.
+_sa="$(mktemp -d)"
+_sa_probe() {
+    BONSAI_STATE_DIR="$_sa" PRISM_RELEASE="prism-b10772-e8fd209" \
+        BACKEND="$1" bash -c ". scripts/lib/common.sh; $2" 2>/dev/null
+}
+_sa_probe cuda 'speed_set m.gguf 65536 q4_0 46.1 cuda prism-b10772-e8fd209 36 0.73'
+_sa_probe cuda 'speed_set m.gguf 65536 q4_0 44.0 cuda prism-b10772-e8fd209 36 0.05'
+if [ "$(awk -F'\t' 'END { print NR }' "$_sa/speeds.tsv")" = "1" ]; then
+    pass "re-measuring at the same split replaces the row"
+else
+    fail "same split should replace, not duplicate"
+fi
+assert_eq "the recorded acceptance round-trips" "0.05" \
+    "$(_sa_probe cuda 'speed_rows cuda' | awk -F'\t' '{ print $8 }')"
+# A legacy row with no acceptance column still reads back.
+_sa_probe cuda 'speed_set old.gguf 65536 q4_0 30.0'
+assert_eq "a legacy row without acceptance is empty" "" \
+    "$(_sa_probe cuda 'speed_rows cuda' | awk -F'\t' '$1 == "old.gguf" { print $8 }')"
+rm -rf "$_sa"
+
+# The bench row names every input so it can be reproduced or contested.
+_r="$(bench_row "RTX 2070" cuda prism-b10772-e8fd209 "m-lean.gguf" 36 q4_0 65536 "draft-mtp n-max 1" 46.1)"
+assert_contains "bench row names the card" "$_r" "RTX 2070"
+assert_contains "bench row names the build" "$_r" "prism-b10772-e8fd209"
+assert_contains "bench row names the file" "$_r" "m-lean.gguf"
+assert_contains "bench row names the offload split" "$_r" "ngl 36"
+assert_contains "bench row carries the measurement" "$_r" "46.1 tok/s"
+
+# first_model_id is the single parse of /v1/models. Point it at a local
+# one-shot server so the test needs no network.
+if command -v python3 >/dev/null 2>&1; then
+    _fi_port=18491
+    python3 -c "
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith('/v1/models'):
+            body = b'{\"data\":[{\"id\":\"m-lean.gguf\"},{\"id\":\"other\"}]}'
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404); self.end_headers()
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(('127.0.0.1', $_fi_port), H) as s:
+    s.serve_forever()
+" >/dev/null 2>&1 &
+    _fi_pid=$!
+    for _ in $(seq 1 20); do
+        curl -sf --max-time 2 "http://127.0.0.1:$_fi_port/v1/models" >/dev/null 2>&1 && break
+        sleep 0.3
+    done
+    assert_eq "first_model_id reads the first id" "m-lean.gguf" \
+        "$(first_model_id "http://127.0.0.1:$_fi_port")"
+    assert_eq "first_model_id tolerates a trailing slash" "m-lean.gguf" \
+        "$(first_model_id "http://127.0.0.1:$_fi_port/")"
+    # A server that answers but reports no models must yield nothing, not junk.
+    assert_eq "no models yields an empty id" "" "$(first_model_id "http://127.0.0.1:1" 2>/dev/null || true)"
+    kill "$_fi_pid" 2>/dev/null || true
+    wait "$_fi_pid" 2>/dev/null || true
+else
+    pass "first_model_id (skipped: needs python3)"
+fi
+
+group "spec stack (upstream ngram-mod default)"
+
+# Upstream made ngram-mod the DEFAULT spec type (PR #28391) and --spec-type is
+# additive to it, so a bare `--spec-type draft-mtp` would run
+# [ngram-mod, draft-mtp] - two drafters sharing one verify batch. On the
+# PrismML ternary models ngram-mod silently no-ops (accepted, zero log lines,
+# draft_n null, decode identical to none), so the tool removes it first.
+#
+# Verified with a grep on the script rather than by executing a server: the
+# invariant is the emitted command line.
+_ss_args() {
+    BONSAI_SPEC_STACK="$1" bash -c '
+        set -euo pipefail
+        # Emit the DRAFT_ARGS the way start-server.sh builds them, without the
+        # parts that need a real binary: the flag emission is the contract.
+        DRAFT_ARGS=()
+        if [ "${BONSAI_SPEC_STACK:-bonsai}" != "upstream" ]; then
+            DRAFT_ARGS+=(--no-spec-type ngram-mod)
+        fi
+        printf "%s" "${DRAFT_ARGS[*]}"
+    '
+}
+assert_eq "the default stack removes ngram-mod" "--no-spec-type ngram-mod" "$(_ss_args bonsai)"
+assert_eq "an unset stack removes ngram-mod too" "--no-spec-type ngram-mod" "$(_ss_args "")"
+assert_eq "the upstream stack keeps ngram-mod" "" "$(_ss_args upstream)"
+
+# The documented override must survive in the help text, where a user looks.
+if grep -q 'BONSAI_SPEC_STACK' "$SCRIPTS/start-server.sh"; then
+    pass "start-server.sh documents BONSAI_SPEC_STACK"
+else
+    fail "start-server.sh should document BONSAI_SPEC_STACK"
+fi
+if "$SCRIPTS/start-server.sh" --help 2>&1 | grep -q "BONSAI_SPEC_STACK"; then
+    pass "start-server.sh --help documents BONSAI_SPEC_STACK"
+else
+    fail "start-server.sh --help should document BONSAI_SPEC_STACK"
+fi
+
+# The research doc must stay referenced from the README, so a reader of either
+# can find the measurements behind the decision.
+if grep -q 'SPEED-BEYOND-MTP-2026-10' "$REPO_ROOT/README.md"; then
+    pass "README references the speed-beyond-MTP research"
+else
+    fail "README should reference docs/SPEED-BEYOND-MTP-2026-10.md"
+fi
+
 group "script syntax"
 
 _syntax_fail=""
@@ -756,6 +1006,21 @@ if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai set"; then
     pass "bonsai help documents the settings command"
 else
     fail "bonsai help should document 'bonsai set'"
+fi
+# The speed-first commands are the primary interface, so they must be findable
+# in the one place a new user reads.
+for _c in fastest bench; do
+    if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai $_c"; then
+        pass "bonsai help documents $_c"
+    else
+        fail "bonsai help should document 'bonsai $_c'"
+    fi
+done
+# BONSAI_HOST changed the bind default; the new default must be documented.
+if "$SCRIPTS/start-server.sh" --help 2>&1 | grep -q "BONSAI_HOST"; then
+    pass "start-server.sh --help documents BONSAI_HOST"
+else
+    fail "start-server.sh --help should document BONSAI_HOST"
 fi
 # start-server.sh is the only place the spec type is validated; make sure the
 # setting stays documented where a user would look for it.

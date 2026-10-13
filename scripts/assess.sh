@@ -158,11 +158,15 @@ measure_kv() {
 
 # bench_tps MODEL NGL CONTEXT KV TOKENS - run one generation, print tok/s.
 # Prints nothing and fails if the server cannot start or produce a number.
+# Sets BENCH_ACCEPTANCE to the draft acceptance rate when the run used a spec
+# type, empty otherwise: the same tok/s at 0.05 acceptance means the drafts are
+# not landing, which is a different answer to "is this config fast".
 bench_tps() {
     _model="$1" _ngl="$2" _ctx="$3" _kv="$4" _tokens="$5"
     shift 5
     _port="$BENCH_PORT"
     _log="$BENCH_LOG"
+    BENCH_ACCEPTANCE=""
 
     "$SERVER_BIN" -m "$_model" --port "$_port" --ctx-size "$_ctx" \
         --cache-type-k "$_kv" --cache-type-v "$_kv" \
@@ -178,9 +182,15 @@ bench_tps() {
 
     _tps=""
     if [ "$_ready" = 1 ]; then
+        # The bench runs single-model mode (-m), which pins the model, but the
+        # id still has to be named: llama-server in any mode rejects a request
+        # without "model", so a payload that omits it would fail here and read
+        # as "could not measure" instead of the real measurement.
+        _model_id="$(first_model_id "http://127.0.0.1:$_port")"
+        [ -n "$_model_id" ] || _model_id="$(basename "${_model%.gguf}")"
         _resp="$(curl -s --max-time 300 "http://127.0.0.1:$_port/v1/chat/completions" \
             -H 'Content-Type: application/json' \
-            -d "$(printf '{"messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":%s,"temperature":0.7}' "$_tokens")" \
+            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":%s,"temperature":0.7}' "$_model_id" "$_tokens")" \
             2>/dev/null || true)"
         _tps="$(printf '%s' "$_resp" | python3 -c '
 import json, sys
@@ -190,6 +200,10 @@ except Exception:
     pass
 ' 2>/dev/null || true)"
     fi
+
+    # The acceptance line lands in the log once the generation finishes, so
+    # read it after the request, not while it runs.
+    BENCH_ACCEPTANCE="$(log_draft_acceptance "$_log" || true)"
 
     kill "$_pid" 2>/dev/null || true
     wait "$_pid" 2>/dev/null || true
@@ -218,6 +232,7 @@ measure_speed() {
     BENCH_LOG="$STATE_DIR/assess-speed.log"
 
     _tps="$(bench_tps "$_model" "$BONSAI_NGL" "$_ctx" "$_kv" 128 || true)"
+    _acc="${BENCH_ACCEPTANCE:-}"
 
     if [ -z "$_tps" ]; then
         warn "Could not measure speed for $(basename "$_model") at $_ctx/$_kv."
@@ -237,10 +252,10 @@ measure_speed() {
         fi
         return 1
     fi
-    speed_set "$_model" "$_ctx" "$_kv" "$_tps"
+    speed_set "$_model" "$_ctx" "$_kv" "$_tps" "$BACKEND" "$PRISM_RELEASE" "$BONSAI_NGL" "$_acc"
     coverage_set backend "${BACKEND:-unknown}"
     coverage_set kv "$_kv"
-    info "measured $(basename "$_model") at $_ctx/$_kv: ${_tps} tok/s"
+    info "measured $(basename "$_model") at $_ctx/$_kv: ${_tps} tok/s${_acc:+ (draft acceptance $_acc)}"
 }
 
 # show_coverage - which configuration dimensions have been explored.
@@ -638,6 +653,7 @@ if [ "$SWEEP" = 1 ]; then
         read -r _vram _ram <<<"$(kv_placement "$N_LAYER" "$_ngl" "$W_GB" "$KV_GB")"
 
         _tps="$(bench_tps "$SWEEP_PATH" "$_ngl" "$CONTEXT" "$KV_TYPE" "$SWEEP_TOKENS" || true)"
+        _acc="${BENCH_ACCEPTANCE:-}"
 
         if [ -z "$_tps" ]; then
             printf '  %8s %8sG %8sG %10s %10s\n' "$_ngl" "$_vram" "$_ram" "-" "-"
@@ -656,7 +672,7 @@ if [ "$SWEEP" = 1 ]; then
         if [ -z "$BEST_TPS" ] || awk -v a="$_tps" -v b="$BEST_TPS" 'BEGIN { exit !(a > b) }'; then
             BEST_TPS="$_tps"; BEST_NGL="$_ngl"
         fi
-        speed_set "$SWEEP_PATH" "$CONTEXT" "$KV_TYPE" "$_tps"
+        speed_set "$SWEEP_PATH" "$CONTEXT" "$KV_TYPE" "$_tps" "$BACKEND" "$PRISM_RELEASE" "$_ngl" "$_acc"
         coverage_set ngl "$_ngl"
     done
     coverage_set context "$CONTEXT"

@@ -255,6 +255,8 @@ Everything goes through one command. You do not need to know systemd:
 ./scripts/bonsai stop
 ./scripts/bonsai logs -f
 ./scripts/bonsai speed      # quick tokens/sec check
+./scripts/bonsai fastest    # every measured configuration on this backend, fastest first
+./scripts/bonsai bench      # measure a model on this machine (writes its row)
 ./scripts/bonsai tune       # find the fastest settings on this machine
 ./scripts/bonsai assess     # what fits
 ./scripts/bonsai models     # what is installed
@@ -291,6 +293,38 @@ automatically; without it, `bonsai` starts the server in the background instead.
 ```bash
 systemctl --user enable ikaros-bonsai    # only if you want it at login
 ```
+
+### The speed-first defaults
+
+Three levers carry the measured speed, in order of size: **full GPU offload**
+(up to 4.2x), the **MTP speculative head** (+23-33% with a grafted file on
+Turing/Ampere, +15% on Vulkan, +6% on ROCm), then the KV cache type (a few
+percent). The first two are applied for you:
+
+- `start-server.sh` keeps `-ngl 99`, the full offload.
+- When the models directory holds a `*-mtp.gguf`, `draft-mtp` is switched on
+  automatically and the draft window is picked per backend (Vulkan 2, ROCm and
+  CUDA 1) - the measured winner on each. Override with `BONSAI_SPEC_TYPE=none`.
+- llama.cpp's own default spec type, `ngram-mod`, is removed first with
+  `--no-spec-type ngram-mod`: `--spec-type` is additive upstream, and on the
+  PrismML ternary models `ngram-mod` silently no-ops (accepted, no log output,
+  decode unchanged) while still sharing the verify batch. Set
+  `BONSAI_SPEC_STACK=upstream` to keep it. See
+  [docs/SPEED-BEYOND-MTP-2026-10.md](docs/SPEED-BEYOND-MTP-2026-10.md) for the
+  measurements and the other model-file-independent speed levers.
+
+`fastest` reads only rows this machine measured, on this backend and release:
+
+```
+  backend cuda   release prism-b10772-e8fd209   card GeForce RTX 2070
+
+    tok/s  model                                      offload  measured at
+    46.1  Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean            36  65536 ctx, q4_0 KV
+    42.6  Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean            36  65536 ctx, q4_0 KV
+```
+
+A number with no row behind it is never shown; run `bench` (or `--measure
+--speed`, or `--sweep`) to create the rows first.
 
 ## Getting the most tokens per second
 
@@ -423,14 +457,17 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | Variable | Default | Meaning |
 |---|---|---|
 | `BONSAI_PORT` | `8081` | listening port |
+| `BONSAI_HOST` | `127.0.0.1` | listening address; `0.0.0.0` to reach the server from other machines on your network |
 | `BONSAI_CTX` | `65536` | context size |
 | `BONSAI_NGL` | `99` | GPU layers |
 | `BONSAI_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
 | `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
 | `BONSAI_MODELS_DIR` | `./models` | where models are stored |
 | `BONSAI_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
-| `BONSAI_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` |
+| `BONSAI_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` (auto-enabled when one is installed); `none` to disable |
+| `BONSAI_SPEC_STACK` | `bonsai` | `upstream` keeps llama.cpp's default `ngram-mod` alongside the chosen type; `bonsai` removes it first (it no-ops on the ternary models) |
 | `BONSAI_SPEC_DRAFT_N_MAX` | `1` | tokens to draft; 2 measured slower on a stock build |
+| `BONSAI_MOE_CACHE_MIB` | unset | GPU cache for CPU-resident MoE experts, `+1.5-1.85x` decode (needs a source build; the pinned prebuilt lacks the flag) |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
 | `HSA_OVERRIDE_GFX_VERSION` | unset | only if your gfx target is not covered |
