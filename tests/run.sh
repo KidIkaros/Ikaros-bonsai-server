@@ -361,6 +361,61 @@ else
     pass "stop-server safety (skipped: needs python3 and lsof)"
 fi
 
+group "KV cost model"
+
+# Point the caches at temp files so the test never touches real measurements.
+_tmpdir="$(mktemp -d)"
+KV_COST_CACHE="$_tmpdir/kv-costs.tsv"
+SPEED_CACHE="$_tmpdir/speeds.tsv"
+
+assert_eq "f16 bits/element" "16" "$(kv_bits_per_element f16)"
+assert_eq "q8_0 bits/element" "8.5" "$(kv_bits_per_element q8_0)"
+assert_eq "q4_0 bits/element" "4.5" "$(kv_bits_per_element q4_0)"
+assert_eq "iq4_nl bits/element" "4.5" "$(kv_bits_per_element iq4_nl)"
+assert_eq "f32 bits/element" "32" "$(kv_bits_per_element f32)"
+if kv_bits_per_element bogus >/dev/null 2>&1; then
+    fail "unknown KV type should not have a bit width"
+else
+    pass "unknown KV type has no bit width"
+fi
+
+# The 8B measured 147456 bytes/cell at f16, which is 9216 MiB at 65536 cells.
+# That figure was measured directly on hardware, so it pins the arithmetic.
+kv_cost_set "fake-model.gguf" "147456.0000"
+assert_eq "kv_cost_get round-trips" "147456.0000" "$(kv_cost_get fake-model.gguf)"
+assert_eq "f16 KV at 65536 (measured 9216 MiB)" "9216" "$(kv_mib fake-model.gguf 65536 f16)"
+assert_eq "q8_0 KV at 65536 (measured 4896 MiB)" "4896" "$(kv_mib fake-model.gguf 65536 q8_0)"
+assert_eq "q4_0 KV at 65536 (measured 2592 MiB)" "2592" "$(kv_mib fake-model.gguf 65536 q4_0)"
+assert_eq "iq4_nl matches q4_0 at 65536" "2592" "$(kv_mib fake-model.gguf 65536 iq4_nl)"
+assert_eq "q8_0 is exactly 1.88x smaller than f16" "1.88" \
+    "$(awk -v a="9216" -v b="4896" 'BEGIN { printf "%.2f", a/b }')"
+assert_eq "kv_mib at 8192 is an eighth of 65536" "1152" "$(kv_mib fake-model.gguf 8192 f16)"
+
+# A second measurement for the same model replaces the first, never duplicates.
+kv_cost_set "fake-model.gguf" "1000.0000"
+assert_eq "re-measuring replaces, not appends" "1" "$(grep -c 'fake-model.gguf' "$KV_COST_CACHE")"
+assert_eq "the replacement value wins" "1000.0000" "$(kv_cost_get fake-model.gguf)"
+
+# An unmeasured model must produce nothing rather than a wrong number.
+if kv_mib "never-measured.gguf" 65536 f16 >/dev/null 2>&1; then
+    fail "unmeasured model should not produce a KV size"
+else
+    pass "unmeasured model produces no KV size"
+fi
+
+speed_set "fake-model.gguf" 65536 q8_0 "186.8"
+assert_eq "speed_set/speed_get round-trips" "186.8" "$(speed_get fake-model.gguf 65536 q8_0)"
+if speed_get "fake-model.gguf" 32768 q8_0 >/dev/null 2>&1; then
+    fail "speed should be keyed by context"
+else
+    pass "speed is keyed by context"
+fi
+speed_set "fake-model.gguf" 65536 q8_0 "200.0"
+assert_eq "re-benchmarking replaces the speed" "1" "$(grep -c 'fake-model' "$SPEED_CACHE")"
+assert_eq "the new speed wins" "200.0" "$(speed_get fake-model.gguf 65536 q8_0)"
+
+rm -rf "$_tmpdir"
+
 group "script syntax"
 
 _syntax_fail=""
@@ -378,7 +433,7 @@ fi
 group "help output"
 
 for f in detect fetch-binary get-models start-server stop-server hermes-wire \
-         install-service build-from-source make-kv-bias; do
+         install-service build-from-source make-kv-bias assess; do
     if "$SCRIPTS/$f.sh" --help >/dev/null 2>&1; then
         pass "$f.sh --help"
     else

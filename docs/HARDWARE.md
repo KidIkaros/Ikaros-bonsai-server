@@ -200,6 +200,24 @@ mean rebasing thousands of lines of kernels across CPU, CUDA and Metal onto a fi
 newer tree. The full evidence, including what to watch for instead, is in
 [ROTORQUANT-ASSESSMENT.md](ROTORQUANT-ASSESSMENT.md).
 
+### Ask the machine directly
+
+Rather than reading tables, ask:
+
+```bash
+./scripts/assess.sh --kv-matrix
+```
+
+It measures each model's cache geometry once, then computes the KV cost exactly for
+every cache type, and reports what fits with how much headroom. See the
+[README](../README.md#what-can-this-machine-actually-run).
+
+The KV cost model behind it is exact rather than heuristic. The bit widths come from the
+formats themselves - `f16` 16, `q8_0` 8 bits plus a 16-bit scale per 32 elements (8.5),
+`q4_0` and `iq4_nl` 4.5 - and a single f16 measurement per model pins the rest. Verified
+against hardware: the 8B measured 1152 MiB at 8192 cells and 9216 MiB at 65536, and the
+model predicts q8_0 at 4896 and q4_0 at 2592, which are the measured values.
+
 ### Per model
 
 Assuming the defaults: **65536 context and `q8_0` KV**.

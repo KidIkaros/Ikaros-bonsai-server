@@ -137,6 +137,38 @@ matrix.
 > for a different runtime - MLX, GSQ-RCO, NInfer, AWQ - are detected and refused with
 > a clear message rather than failing later.
 
+## What can this machine actually run?
+
+```bash
+./scripts/assess.sh                # assess installed models at 65536 / q8_0
+./scripts/assess.sh --kv-matrix    # every KV cache type side by side
+./scripts/assess.sh --measure      # measure KV cost for installed models
+./scripts/assess.sh --measure --speed   # also benchmark tokens per second
+```
+
+It reports weights, KV cache, total and headroom per model, then tells you the largest
+one that fits:
+
+```
+  model                                         weights       KV    total     spare  verdict
+  prism-ml_Bonsai-1.7B-gguf__Bonsai-1.7B-Q1_0      0.2G     3.7G     3.9G     10.1G  fits  186.8 tok/s
+  prism-ml_Ternary-Bonsai-8B-gguf__Ternary-Bon     2.0G     4.8G     6.8G      7.2G  fits
+```
+
+Two things make this different from a generic fit calculator:
+
+- **It knows PrismML's quant formats and measures your models**, rather than estimating
+  from a generic bytes-per-parameter rule.
+- **It treats the KV cache as a first-class cost.** `--kv-matrix` shows what changing
+  the cache type does to the verdict, which is usually the difference between fitting
+  and not fitting.
+
+Speed is **measured, never estimated**. Run `--measure --speed` once per model; until
+then the column is simply absent rather than filled with a guess.
+
+`--measure` is a one-off per model: it loads each one briefly at a 512-token context to
+read its cache geometry, which is exact and cheap.
+
 ## Everyday use
 
 ```bash

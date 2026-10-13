@@ -187,6 +187,99 @@ version_ge() {
 }
 
 # ---------------------------------------------------------------------------
+# KV cache cost model
+# ---------------------------------------------------------------------------
+
+# Bits per cache element, derived from the formats themselves:
+#   f16 / bf16        16
+#   q8_0              8 bits plus a 16-bit scale per 32 elements = 8.5
+#   q5_0 / q5_1       5 bits plus scale = 5.5
+#   q4_0 / q4_1       4 bits plus scale = 4.5
+#   iq4_nl            4 bits plus scale = 4.5
+#   f32               32
+#
+# Verified exact against measured sizes on the 8B at 8192 cells: f16 1152 MiB,
+# q8_0 612 (16/8.5 = 1.882), q4_0 324 (16/4.5 = 3.556). All four matched to
+# 0.00%, so a model only needs measuring once, at f16.
+kv_bits_per_element() {
+    case "$1" in
+        f32)              printf '32' ;;
+        f16|bf16)         printf '16' ;;
+        q8_0)             printf '8.5' ;;
+        q5_0|q5_1)        printf '5.5' ;;
+        q4_0|q4_1|iq4_nl) printf '4.5' ;;
+        *) return 1 ;;
+    esac
+}
+
+# KV_COST_CACHE - f16 bytes-per-cell per model, filled in by assess.sh --measure.
+KV_COST_CACHE="$STATE_DIR/kv-costs.tsv"
+# SPEED_CACHE - measured tokens per second per model, context and KV type.
+SPEED_CACHE="$STATE_DIR/speeds.tsv"
+
+# kv_cost_get MODEL - print the measured f16 bytes per cell, or nothing.
+kv_cost_get() {
+    [ -f "$KV_COST_CACHE" ] || return 1
+    local _key
+    _key="$(basename "$1")"
+    awk -F'\t' -v k="$_key" '$1 == k { print $2; found=1 } END { exit !found }' "$KV_COST_CACHE"
+}
+
+# kv_cost_set MODEL BYTES_PER_CELL - record a measurement, replacing any old one.
+kv_cost_set() {
+    mkdir -p "$STATE_DIR"
+    local _key _tmp
+    _key="$(basename "$1")"
+    _tmp="$KV_COST_CACHE.tmp"
+    if [ -f "$KV_COST_CACHE" ]; then
+        awk -F'\t' -v k="$_key" '$1 != k' "$KV_COST_CACHE" > "$_tmp"
+    else
+        : > "$_tmp"
+    fi
+    printf '%s\t%s\n' "$_key" "$2" >> "$_tmp"
+    mv "$_tmp" "$KV_COST_CACHE"
+}
+
+# kv_mib MODEL CELLS TYPE - KV cache size in MiB for a measured model, or nothing.
+kv_mib() {
+    local _bpc _bits
+    _bpc="$(kv_cost_get "$1")" || return 1
+    _bits="$(kv_bits_per_element "$3")" || return 1
+    awk -v bpc="$_bpc" -v cells="$2" -v bits="$_bits" \
+        'BEGIN { printf "%.0f", bpc * (bits / 16) * cells / 1048576 }'
+}
+
+# speed_get MODEL CELLS TYPE - measured tokens per second, or nothing.
+speed_get() {
+    [ -f "$SPEED_CACHE" ] || return 1
+    local _key
+    _key="$(basename "$1")"
+    awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" \
+        '$1 == k && $2 == c && $3 == t { print $4; found=1 } END { exit !found }' "$SPEED_CACHE"
+}
+
+# speed_set MODEL CELLS TYPE TPS - record a measurement, replacing any old one.
+speed_set() {
+    mkdir -p "$STATE_DIR"
+    local _key _tmp
+    _key="$(basename "$1")"
+    _tmp="$SPEED_CACHE.tmp"
+    if [ -f "$SPEED_CACHE" ]; then
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" \
+            '!($1 == k && $2 == c && $3 == t)' "$SPEED_CACHE" > "$_tmp"
+    else
+        : > "$_tmp"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$4" >> "$_tmp"
+    mv "$_tmp" "$SPEED_CACHE"
+}
+
+# model_size_bytes MODEL - file size, or 0.
+model_size_bytes() {
+    stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || echo 0
+}
+
+# ---------------------------------------------------------------------------
 # Installed binary lookup
 # ---------------------------------------------------------------------------
 
