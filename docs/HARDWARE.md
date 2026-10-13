@@ -133,22 +133,63 @@ the allowed list rather than letting llama-server reject it later.
 > expect visible degradation on long contexts and reasoning-heavy prompts. Test before
 > rolling it out to anyone else. This project has measured memory only, not quality.
 
-### A quality lever for q4_0 K
+### The 4x path, with quality recovered: `--kv-mean-center`
 
-The PrismML fork adds `--kv-mean-center`, which subtracts a precomputed per-(head,
-channel) bias from K before it is quantized. Symmetric `q4_0` has no zero point, so a
-channel with a non-zero mean wastes dynamic range encoding that constant offset; removing
-it first reduces quantization error. The fork ships a softmax-invariance argument for why
-this is exactly correct in infinite precision.
+`q4_0` alone costs quality. The PrismML fork adds a way to get most of it back.
 
-It is scoped to `q4_0` K and needs a calibration file from `tools/kv-mean-center`:
+`--kv-mean-center` subtracts a precomputed per-(head, channel) bias from K before it is
+quantized. Symmetric `q4_0` has no zero point, so a channel with a non-zero mean wastes
+dynamic range encoding that constant offset; removing it first reduces quantization
+error. Because the same bias is subtracted from every cached key, it shifts every
+attention logit in a query's row by the same constant, which softmax is invariant to -
+so the fork can argue the technique is exactly correct in infinite precision.
+
+Build the bias file with one command:
+
+```bash
+./scripts/make-kv-bias.sh
+```
+
+It generates a calibration corpus from the model itself (no external data needed),
+computes the bias, and prints the command to serve it. Then:
 
 ```bash
 BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
-BONSAI_EXTRA_ARGS="--kv-mean-center /path/to/bias.gguf" ./scripts/start-server.sh
+BONSAI_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" ./scripts/start-server.sh
 ```
 
-See [MODELS.md](MODELS.md) for whether a bias file exists for your model.
+Measured on the 8B at 65536 tokens:
+
+| Configuration | KV cache | vs f16 | Quality (logit KLD vs f16) |
+|---|---|---|---|
+| `f16` / `f16` | 9216 MiB (9.0 GB) | 1.00x | baseline |
+| `q8_0` / `q8_0` (default) | 4896 MiB (4.8 GB) | 1.88x | near-lossless |
+| **`q4_0` K + `q8_0` V + mean-center** | **3744 MiB (3.66 GB)** | **2.46x** | **0.00111** |
+| `q4_0` / `q4_0` | 2592 MiB (2.5 GB) | 3.56x | noticeable loss |
+
+The quality column is the fork's own measurement on a hybrid-attention model with a
+`q4_0` K cache: 0.00111 with centering against 0.00144 uncentered, so centering recovers
+about 23% of the divergence. This project verified the memory figures and that the whole
+flow works; it did not re-measure quality.
+
+**The basis must match.** The fork rotates the K cache before quantizing it, and the bias
+lives in whatever basis the calibration used. `make-kv-bias.sh` always calibrates with
+`-ctk q4_0` for exactly this reason. If you calibrate with the default `f16` cache and
+then serve with `q4_0`, the loader refuses the file:
+
+```
+load_kv_mean_center: bias file ... was calibrated with the K-cache rotation inactive,
+but it is active for this context - recalibrate with matching cache settings
+```
+
+That guard is deliberate: a mismatched bias is measurably worse than either feature
+alone. The API surfaces only a generic "failed to load", so check `.state/server.log` for
+the real reason.
+
+**Limitations.** Scoped to `q4_0` K only. The calibration hook covers the standard
+dense/GQA attention path, which includes the attention sub-cache of hybrid models like
+Bonsai 2; MLA and other specialized variants are not covered. A bias is valid only for
+the model and K cache type it was built for.
 
 ### Per model
 

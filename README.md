@@ -151,6 +151,19 @@ BONSAI_KV_TYPE=iq4_nl ./scripts/start-server.sh   # smaller KV cache, more model
 BONSAI_KV_TYPE=f16 ./scripts/start-server.sh      # no KV quantization
 ```
 
+To push the cache to a quarter of its f16 size without giving up quality, build a
+mean-centering bias file and pair it with a `q4_0` K cache:
+
+```bash
+./scripts/make-kv-bias.sh                          # one command, no external data
+BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
+BONSAI_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" \
+./scripts/start-server.sh
+```
+
+See [docs/HARDWARE.md](docs/HARDWARE.md#the-4x-path-with-quality-recovered---kv-mean-center)
+for the measured numbers.
+
 ## Running it as a service (optional)
 
 ```bash

@@ -378,7 +378,7 @@ fi
 group "help output"
 
 for f in detect fetch-binary get-models start-server stop-server hermes-wire \
-         install-service build-from-source; do
+         install-service build-from-source make-kv-bias; do
     if "$SCRIPTS/$f.sh" --help >/dev/null 2>&1; then
         pass "$f.sh --help"
     else
