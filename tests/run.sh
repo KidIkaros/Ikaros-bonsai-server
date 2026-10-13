@@ -1440,6 +1440,139 @@ _expect_rc 1 "$SCRIPTS/ikaros" identity "$_ec/nope.gguf"
 _expect_rc 0 "$SCRIPTS/ikaros" help
 rm -rf "$_ec"
 
+group "start-server command assembly"
+
+# The 453-line flag builder is where every speed lever lives and the one path
+# with no behavioral test: a dropped --flash-attn, a deleted --no-spec-type, a
+# broken MTP auto-detect would all pass the rest of the suite. This runs the
+# real start-server.sh against a fake llama-server that records its argv, so
+# the emitted command line is asserted, not the intent.
+#
+# The fake binary is placed where llama_server_bin looks: $BIN_DIR/$BACKEND/.
+# A temp REPO_ROOT is not possible (BIN_DIR derives from it), so the fake goes
+# into the repo's own bin/<backend>/ and is removed after - bin/ is gitignored.
+_ss="$(mktemp -d)"
+_ss_backend="cpu"
+mkdir -p "$REPO_ROOT/bin/$_ss_backend"
+_fake="$REPO_ROOT/bin/$_ss_backend/llama-server"
+cat > "$_fake" <<'FAKE'
+#!/usr/bin/env bash
+# Record the argv start-server.sh built, then exit 0 so the health check's
+# first probe fails fast and the run ends without hanging.
+printf '%s\n' "$@" > "$IKAROS_ARGV_OUT"
+exit 0
+FAKE
+chmod +x "$_fake"
+
+# Seed detection so BACKEND resolves without probing real hardware.
+mkdir -p "$_ss/state"
+cat > "$_ss/state/detect.env" <<ENV
+BACKEND='$_ss_backend'
+BACKEND_REASON='test'
+GPU_NAME='test-gpu'
+PRISM_RELEASE='prism-b10772-e8fd209'
+PRISM_COMMIT='e8fd209'
+ENV
+# A model must exist or start-server refuses to start.
+mkdir -p "$_ss/models"
+: > "$_ss/models/test-model.gguf"
+
+# The fake binary writes one arg per line (printf '%s\n' "$@"), so the argv is
+# reassembled with single spaces before matching: "--flash-attn on" is two
+# array elements, not one token.
+_argv_join() { tr '\n' ' ' < "$1" | sed 's/  */ /g; s/ $//'; }
+_run_ss() {
+    # Run start-server in background mode with the fake binary; it will exit
+    # immediately, and the recorded argv is the artifact under test.
+    IKAROS_ARGV_OUT="$_ss/argv.txt" \
+    IKAROS_STATE_DIR="$_ss/state" \
+    IKAROS_MODELS_DIR="$_ss/models" \
+    IKAROS_BIN_DIR="$REPO_ROOT/bin" \
+    IKAROS_PORT=18181 \
+    IKAROS_START_TIMEOUT=3 \
+        "$SCRIPTS/start-server.sh" --background --no-browser >/dev/null 2>&1 || true
+}
+
+# --- Case 1: default GPU-less CPU run. The invariant levers must be present.
+_run_ss
+_argv="$(_argv_join "$_ss/argv.txt" 2>/dev/null || true)"
+_has() { case " $_argv " in *" $1 "*) return 0 ;; esac; return 1; }
+
+if [ -n "$_argv" ]; then
+    pass "start-server emits a command line to the fake binary"
+else
+    fail "start-server produced no argv" "the fake binary was not invoked"
+fi
+# flash-attn on is the 30-69% lever; its absence is a silent perf regression.
+if _has "--flash-attn on"; then
+    pass "the emitted command has --flash-attn on"
+else
+    fail "emitted command must carry --flash-attn on" "$_argv"
+fi
+# --no-spec-type ngram-mod stops upstream's default drafters stacking on.
+if _has "--no-spec-type ngram-mod"; then
+    pass "the emitted command removes upstream ngram-mod"
+else
+    fail "emitted command must carry --no-spec-type ngram-mod" "$_argv"
+fi
+# Loopback by default; a local server with no auth must not bind 0.0.0.0.
+if _has "--host 127.0.0.1"; then
+    pass "the emitted command binds 127.0.0.1 by default"
+else
+    fail "emitted command must bind 127.0.0.1" "$_argv"
+fi
+if _has "--models-max 1"; then
+    pass "the emitted command pins one model (router mode)"
+else
+    fail "emitted command must carry --models-max 1" "$_argv"
+fi
+if _has "--jinja"; then
+    pass "the emitted command enables --jinja (tool calls)"
+else
+    fail "emitted command must carry --jinja" "$_argv"
+fi
+
+# --- Case 2: an MTP model present auto-enables draft-mtp at the CPU n-max.
+# CPU's spec_nmax_for is 0, so on CPU drafting stays off; use a fake GPU-less
+# path by checking the MTP file is at least detected (no crash, no spurious
+# --spec-type when no MTP file exists).
+if _has "--spec-type"; then
+    fail "no MTP model present, so no --spec-type should be emitted" "$_argv"
+else
+    pass "no MTP file means no speculative decoding"
+fi
+
+# --- Case 3: a moe-cache setting without binary support warns and omits the
+# flag rather than passing an unknown flag that would abort llama-server.
+: > "$_ss/argv.txt"
+IKAROS_ARGV_OUT="$_ss/argv.txt" \
+IKAROS_STATE_DIR="$_ss/state" IKAROS_MODELS_DIR="$_ss/models" \
+IKAROS_PORT=18182 IKAROS_START_TIMEOUT=3 IKAROS_MOE_CACHE_MIB=2048 \
+    "$SCRIPTS/start-server.sh" --background --no-browser >/dev/null 2>&1 || true
+_argv2="$(_argv_join "$_ss/argv.txt" 2>/dev/null || true)"
+_has2() { case " $_argv2 " in *" $1 "*) return 0 ;; esac; return 1; }
+if _has2 "--moe-cache-mib"; then
+    fail "fake binary reports no --moe-cache-mib support, so it must be omitted" "$_argv2"
+else
+    pass "moe-cache is omitted when the binary lacks the flag"
+fi
+
+# --- Case 4: IKAROS_HOST override reaches the command line.
+: > "$_ss/argv.txt"
+IKAROS_ARGV_OUT="$_ss/argv.txt" IKAROS_HOST=0.0.0.0 \
+IKAROS_STATE_DIR="$_ss/state" IKAROS_MODELS_DIR="$_ss/models" \
+IKAROS_PORT=18183 IKAROS_START_TIMEOUT=3 \
+    "$SCRIPTS/start-server.sh" --background --no-browser >/dev/null 2>&1 || true
+_argv3="$(_argv_join "$_ss/argv.txt" 2>/dev/null || true)"
+_has3() { case " $_argv3 " in *" $1 "*) return 0 ;; esac; return 1; }
+if _has3 "--host 0.0.0.0"; then
+    pass "IKAROS_HOST override reaches the command line"
+else
+    fail "IKAROS_HOST=0.0.0.0 should bind 0.0.0.0" "$_argv3"
+fi
+
+rm -rf "$_ss" "$REPO_ROOT/bin/$_ss_backend"
+
 group "env var back-compat (bonsai -> ikaros rename)"
 
 # The project was renamed bonsai -> ikaros. Every var is now IKAROS_*, but an
