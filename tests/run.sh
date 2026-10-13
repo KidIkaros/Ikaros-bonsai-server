@@ -595,6 +595,14 @@ if "$SCRIPTS/bonsai" help 2>&1 | grep -q "bonsai set"; then
 else
     fail "bonsai help should document 'bonsai set'"
 fi
+# start-server.sh is the only place the spec type is validated; make sure the
+# setting stays documented where a user would look for it.
+if "$SCRIPTS/start-server.sh" --help 2>&1 | grep -q "BONSAI_SPEC_TYPE"; then
+    pass "start-server.sh --help documents BONSAI_SPEC_TYPE"
+else
+    fail "start-server.sh --help should document BONSAI_SPEC_TYPE"
+fi
+
 if "$SCRIPTS/bonsai" nonsense >/dev/null 2>&1; then
     fail "bonsai should reject an unknown command"
 else

@@ -17,6 +17,9 @@
 #                           f16 to disable. See docs/HARDWARE.md.
 #   BONSAI_KV_TYPE_K / _V   set K and V independently (advanced)
 #   BONSAI_DRAFT_MODEL=path a *-dspark-* drafter, for speculative decoding
+#   BONSAI_SPEC_TYPE=name   speculative decoding type; draft-mtp uses the MTP
+#                           head inside a *-mtp.gguf, no second file needed
+#   BONSAI_SPEC_DRAFT_N_MAX tokens to draft (default 1; 2 is slower here)
 #   BONSAI_MODELS_DIR=path  models directory
 #   BONSAI_EXTRA_ARGS="..." extra llama-server flags
 
@@ -116,14 +119,29 @@ if [ "$(kv_type_effective)" != "f16" ]; then
     KV_ARGS=(--cache-type-k "$KV_TYPE_K" --cache-type-v "$KV_TYPE_V")
 fi
 
-# Speculative decoding, when a drafter is configured. Refuse a missing file
-# here rather than letting the server fail on first request.
+# Speculative decoding. Either a separate drafter via BONSAI_DRAFT_MODEL, or a
+# spec type such as draft-mtp, which uses the MTP head already inside the model
+# file and needs no second file.
 DRAFT_ARGS=()
 if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
     [ -f "$BONSAI_DRAFT_MODEL" ] ||
         die "Draft model not found: $BONSAI_DRAFT_MODEL
        Set BONSAI_DRAFT_MODEL to a GGUF, or unset it to disable drafting."
-    DRAFT_ARGS=(--model-draft "$BONSAI_DRAFT_MODEL")
+    DRAFT_ARGS+=(--model-draft "$BONSAI_DRAFT_MODEL")
+fi
+if [ -n "${BONSAI_SPEC_TYPE:-}" ]; then
+    case "$BONSAI_SPEC_TYPE" in
+        none|draft-simple|draft-eagle3|draft-mtp|draft-dflash|draft-dspark|\
+        ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|ngram-cache) ;;
+        *) die "Unknown BONSAI_SPEC_TYPE '$BONSAI_SPEC_TYPE'.
+       Allowed: none, draft-simple, draft-eagle3, draft-mtp, draft-dflash,
+                draft-dspark, ngram-simple, ngram-map-k, ngram-map-k4v,
+                ngram-mod, ngram-cache" ;;
+    esac
+    if [ "$BONSAI_SPEC_TYPE" != "none" ]; then
+        DRAFT_ARGS+=(--spec-type "$BONSAI_SPEC_TYPE"
+                     --spec-draft-n-max "$BONSAI_SPEC_DRAFT_N_MAX")
+    fi
 fi
 
 # Only pass --n-gpu-layers when there is actually a GPU backend in play.
@@ -160,6 +178,9 @@ info "Backend     : $BACKEND"
 info "Models dir  : $MODELS_DIR  ($_gguf_count file(s))"
 if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
     info "Draft model : $(basename "$BONSAI_DRAFT_MODEL")  (speculative decoding)"
+fi
+if [ -n "${BONSAI_SPEC_TYPE:-}" ] && [ "$BONSAI_SPEC_TYPE" != "none" ]; then
+    info "Spec decode : $BONSAI_SPEC_TYPE, n-max $BONSAI_SPEC_DRAFT_N_MAX"
 fi
 if [ -n "${_auto_note:-}" ]; then
     info "KV cache    : $(kv_type_effective)  (auto: $_auto_reason)"

@@ -312,6 +312,31 @@ Fastest: f16 KV, ubatch 512 at 93.5 tok/s.
 That is the trade in one line: `f16` KV buys about 5% and costs 1.88x the cache. If the
 cache does not fit, take `q8_0` and lose almost nothing, or `q4_0` and lose only quality.
 
+### Speculative decoding
+
+This beats everything above. If your model file is a `*-mtp.gguf` it already carries the
+MTP head, so no second file is needed:
+
+```bash
+BONSAI_SPEC_TYPE=draft-mtp ./scripts/bonsai start
+```
+
+Measured here on the 27B MTP file at 65536 with a `q8_0` cache, three generations each:
+
+| Configuration | median tok/s | draft acceptance |
+|---|---|---|
+| no speculative decoding | 37.0 | - |
+| `draft-mtp`, `n-max 1` | **39.2** | 54% |
+| `draft-mtp`, `n-max 2` | 35.0 | 48% |
+
+So about **+6%**, and `n-max 2` is *worse than not using it* — acceptance drops while the
+wider window costs more. Leave `BONSAI_SPEC_DRAFT_N_MAX` at 1.
+
+There is also `BONSAI_DRAFT_MODEL` for a separate `*-dspark-*` drafter. Using a smaller
+Bonsai as a drafter for a bigger one was tested and does not work: the vocabulary is
+compatible, but too few predictions are accepted. See
+[docs/HARDWARE.md](docs/HARDWARE.md#speculative-decoding).
+
 ## The speed-log UI patch (optional, source build)
 
 The prebuilt binaries come from unmodified upstream source, so they cannot contain
@@ -367,6 +392,8 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
 | `BONSAI_MODELS_DIR` | `./models` | where models are stored |
 | `BONSAI_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
+| `BONSAI_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` |
+| `BONSAI_SPEC_DRAFT_N_MAX` | `1` | tokens to draft; 2 measured slower on a stock build |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
 | `HSA_OVERRIDE_GFX_VERSION` | unset | only if your gfx target is not covered |

@@ -300,25 +300,47 @@ The thread result is worth stating plainly because the usual advice is to tune i
 every layer on the GPU, generation is bound by the GPU, and moving threads between 8 and
 16 changed nothing measurable (87.1 against 86.9 tok/s).
 
-### Speculative decoding: only with a purpose-trained drafter
+### Speculative decoding
 
-A draft model predicts the next few tokens cheaply and the target verifies them, which
-can multiply generation speed. The build supports it (`--model-draft`), and this project
-passes it through as `BONSAI_DRAFT_MODEL`.
+A draft predicts the next few tokens cheaply and the target verifies them, which can
+multiply generation speed. Two mechanisms are supported here:
 
-**It is only worth using with a matching `*-dspark-*` drafter.** PrismML publishes one
-for the 27B, `Ternary-Bonsai-27B-dspark-Q4_1.gguf` (1.9 GB). Nothing is published for
-the 8B or 1.7B.
+**The MTP head inside the model file.** A `*-mtp.gguf` carries the model's own
+multi-token-prediction head, so no second file is needed:
 
 ```bash
-# Download the drafter, then:
-BONSAI_DRAFT_MODEL=models/Ternary-Bonsai-27B-dspark-Q4_1.gguf ./scripts/bonsai start
+BONSAI_SPEC_TYPE=draft-mtp ./scripts/bonsai start
 ```
 
-**A smaller model from the same family does not work.** This was tested rather than
-assumed, because it looked promising: Bonsai 1.7B and Bonsai 8B are both `qwen3` with a
-shared tokenizer, so the vocabulary is compatible and the server loads without complaint.
-The measured result on the 8B at 8192, interleaved:
+**A separate drafter.** `BONSAI_DRAFT_MODEL` passes `--model-draft`. PrismML publishes
+`Ternary-Bonsai-27B-dspark-Q4_1.gguf` (1.9 GB) for the 27B.
+
+#### Measured here: use `n-max 1`
+
+On an RX 9060 XT with the 27B lean MTP file at 65536 context and a `q8_0` cache, three
+generations per configuration:
+
+| Configuration | runs | median | draft acceptance |
+|---|---|---|---|
+| no speculative decoding | 36.6 / 37.0 / 37.0 | **37.0** | - |
+| `draft-mtp`, `n-max 1` | 39.1 / 42.1 / 39.2 | **39.2** | 54% |
+| `draft-mtp`, `n-max 2` | 32.0 / 35.0 / 36.8 | 35.0 | 48% |
+
+`n-max 1` is worth about **6 to 13%**, and every run of it beat every run of the baseline.
+**`n-max 2` is worse than not using it at all.** Acceptance falls from 54% to 48% while the
+wider window costs more, because the stock PTQ1_0 mat-vec is inefficient at small batches.
+
+That last point is why the advice differs between builds. A published guide for these
+models recommends `n-max 2` on 12 GB cards and larger, and that is correct **for the build
+it was measured on**, which carries a custom mat-vec kernel that cuts a 3-token batch from
+2.28x to 1.55x a single-token pass. Without that kernel the wider window does not pay.
+On a stock build, use `n-max 1`.
+
+#### A smaller model from the same family does not work
+
+Tested rather than assumed, because it looked promising: Bonsai 1.7B and Bonsai 8B are
+both `qwen3` with a shared tokenizer, so the vocabulary is compatible and the server loads
+the pair without complaint. Measured on the 8B at 8192, interleaved:
 
 | Config | pass 1 | pass 2 |
 |---|---|---|
@@ -326,10 +348,11 @@ The measured result on the 8B at 8192, interleaved:
 | 1.7B draft, `n-max 3` | 87.2 | 91.0 |
 | 1.7B draft, `n-max 8` | 86.8 | 88.8 |
 
-No gain, and sometimes a loss. The 1.7B's predictions are rejected too often for the
-verification to pay for the drafting, which is exactly why the published drafters are
-trained against their specific target rather than being a smaller sibling. Treat
-"compatible vocabulary" as necessary but nowhere near sufficient.
+No gain, and sometimes a loss. Too few of the 1.7B's predictions are accepted for
+verification to pay for the drafting, which is why the published drafters are trained
+against their specific target rather than being a smaller sibling. Compatible vocabulary
+is necessary but nowhere near sufficient: the MTP head works because it was trained for
+exactly this model.
 
 ### Trading context for memory
 

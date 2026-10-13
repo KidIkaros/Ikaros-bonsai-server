@@ -14,7 +14,7 @@ unset _common_dir
 # Record which settings the caller supplied before any default is applied below.
 # Without this, load_settings cannot tell a deliberate override from a default,
 # and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
-_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL"
+_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX"
 _BONSAI_FROM_ENV=""
 for _v in $_BONSAI_SETTINGS; do
     if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
@@ -33,6 +33,14 @@ PRISM_COMMIT="${PRISM_COMMIT:-e8fd209}"
 # git cannot fetch an abbreviated sha, so the source build needs the full one
 PRISM_COMMIT_FULL="${PRISM_COMMIT_FULL:-e8fd209c975c80aa7fb36a8423571ff3b1b7e955}"
 PRISM_REPO="${PRISM_REPO:-PrismML-Eng/llama.cpp}"
+
+# Speculative decoding. "--spec-type draft-mtp" uses the MTP head inside an
+# *-mtp.gguf file, so no separate drafter is needed. Measured on an RX 9060 XT
+# with the 27B lean MTP file: n-max 1 gives +6 to +13%, and n-max 2 is WORSE
+# than baseline (acceptance falls, and the stock small-batch mat-vec makes the
+# wider window cost more than it saves). See docs/HARDWARE.md.
+BONSAI_SPEC_TYPE="${BONSAI_SPEC_TYPE:-}"
+BONSAI_SPEC_DRAFT_N_MAX="${BONSAI_SPEC_DRAFT_N_MAX:-1}"
 
 # Optional draft model for speculative decoding. Must share the target's
 # vocabulary; the PrismML repos ship purpose-trained drafters named *-dspark-*.

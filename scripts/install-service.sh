@@ -112,6 +112,8 @@ SETTINGS_TMP="$SETTINGS_FILE.tmp"
     printf 'BONSAI_MODELS_DIR=%s\n' "$MODELS_DIR"
     [ -n "${BONSAI_DRAFT_MODEL:-}" ] &&
         printf 'BONSAI_DRAFT_MODEL=%s\n' "$BONSAI_DRAFT_MODEL"
+    [ -n "${BONSAI_SPEC_TYPE:-}" ] &&
+        printf 'BONSAI_SPEC_TYPE=%s\n' "$BONSAI_SPEC_TYPE"
 } > "$SETTINGS_TMP"
 mv "$SETTINGS_TMP" "$SETTINGS_FILE"
 
