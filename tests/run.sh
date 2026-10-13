@@ -266,6 +266,43 @@ if version_ge 7.2.3 7.2; then pass "version_ge patch suffix"; else fail "version
 assert_eq "human_size GB" "1.5 GB" "$(human_size 1610612736)"
 assert_eq "human_size MB" "237 MB" "$(human_size 248512512)"
 
+group "stop-server safety"
+
+# Regression: stop-server.sh used to fall back to "kill whatever is on the
+# port", which would kill an unrelated service that happened to own it. It must
+# now positively identify its own process and refuse anything else.
+if command -v python3 >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1; then
+    FOREIGN_PORT=18481
+    python3 -c "
+import http.server, socketserver
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(('127.0.0.1', $FOREIGN_PORT), http.server.SimpleHTTPRequestHandler) as h:
+    h.serve_forever()
+" >/dev/null 2>&1 &
+    _foreign=$!
+    for _ in $(seq 1 20); do
+        lsof -ti "tcp:$FOREIGN_PORT" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+
+    if BONSAI_PORT=$FOREIGN_PORT "$SCRIPTS/stop-server.sh" >/dev/null 2>&1; then
+        fail "stop-server.sh must refuse to stop a foreign process"
+    else
+        pass "stop-server.sh refuses a foreign process"
+    fi
+
+    if kill -0 "$_foreign" 2>/dev/null; then
+        pass "foreign process left running"
+    else
+        fail "foreign process was killed"
+    fi
+
+    kill "$_foreign" 2>/dev/null || true
+    wait "$_foreign" 2>/dev/null || true
+else
+    pass "stop-server safety (skipped: needs python3 and lsof)"
+fi
+
 group "script syntax"
 
 _syntax_fail=""

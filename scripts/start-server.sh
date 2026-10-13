@@ -53,8 +53,14 @@ _gguf_count="$(find "$MODELS_DIR" -name '*.gguf' 2>/dev/null | wc -l | tr -d ' '
 if command -v lsof >/dev/null 2>&1; then
     _busy="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true)"
     if [ -n "$_busy" ]; then
-        die "Port $BONSAI_PORT is already in use (pid $_busy).
-       Stop it first: ./scripts/stop-server.sh"
+        _busycmd="$(tr '\0' ' ' < "/proc/$_busy/cmdline" 2>/dev/null | cut -c1-100)"
+        err "Port $BONSAI_PORT is already in use (pid $_busy)."
+        echo "       $_busycmd" >&2
+        echo "" >&2
+        echo "       If that is your own service, stop it with systemd. Otherwise pick" >&2
+        echo "       another port:" >&2
+        echo "         BONSAI_PORT=9000 ./scripts/start-server.sh" >&2
+        exit 1
     fi
 fi
 

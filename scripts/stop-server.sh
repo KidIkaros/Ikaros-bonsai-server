@@ -20,19 +20,55 @@ for arg in "$@"; do
     esac
 done
 
-# Prefer the recorded pid; fall back to whatever holds the port.
-_pid=""
-if [ -f "$STATE_DIR/server.pid" ]; then
-    _pid="$(cat "$STATE_DIR/server.pid" 2>/dev/null || true)"
-    # Guard against a recycled pid.
-    if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then _pid=""; fi
-fi
-if [ -z "$_pid" ] && command -v lsof >/dev/null 2>&1; then
-    _pid="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true)"
-fi
+# Only ever stop a process we can prove is ours. Ports are shared real estate:
+# another service may legitimately own $BONSAI_PORT, and killing it because it
+# happens to be on the same port would be a serious bug.
+_is_ours() {
+    _cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true)"
+    [ -n "$_cmd" ] || return 1
+    case "$_cmd" in
+        *"$BIN_DIR"*)   return 0 ;;
+        *"$REPO_ROOT"*) return 0 ;;
+    esac
+    return 1
+}
+
+_find_our_pid() {
+    # 1. the pid we recorded, if it is still running our binary
+    if [ -f "$STATE_DIR/server.pid" ]; then
+        _p="$(cat "$STATE_DIR/server.pid" 2>/dev/null || true)"
+        if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null && _is_ours "$_p"; then
+            printf '%s' "$_p"; return 0
+        fi
+    fi
+    # 2. anything on our port that is running our binary
+    if command -v lsof >/dev/null 2>&1; then
+        for _p in $(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null || true); do
+            if _is_ours "$_p"; then printf '%s' "$_p"; return 0; fi
+        done
+    fi
+    return 1
+}
+
+_pid="$(_find_our_pid || true)"
 
 if [ -z "$_pid" ]; then
-    info "Nothing listening on port $BONSAI_PORT."
+    # Say clearly what is on the port, so a port clash is never silent.
+    _other=""
+    if command -v lsof >/dev/null 2>&1; then
+        _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
+    fi
+    if [ -n "$_other" ]; then
+        warn "Something is listening on port $BONSAI_PORT, but it is not from this repo."
+        dim "  pid $_other: $(tr '\0' ' ' < "/proc/$_other/cmdline" 2>/dev/null | cut -c1-100)"
+        echo "" >&2
+        dim "  Leaving it alone. If it is your own service, stop it with systemd, e.g.:"
+        dim "    systemctl --user stop <service>"
+        dim "  Or run this repo on a different port:"
+        dim "    BONSAI_PORT=9000 ./scripts/start-server.sh"
+        exit 1
+    fi
+    info "Nothing from this repo is listening on port $BONSAI_PORT."
     exit 0
 fi
 
