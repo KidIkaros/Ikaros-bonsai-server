@@ -110,6 +110,8 @@ SETTINGS_TMP="$SETTINGS_FILE.tmp"
     printf 'BONSAI_NGL=%s\n' "$BONSAI_NGL"
     printf 'BONSAI_KV_TYPE=%s\n' "${BONSAI_KV_TYPE:-auto}"
     printf 'BONSAI_MODELS_DIR=%s\n' "$MODELS_DIR"
+    [ -n "${BONSAI_DRAFT_MODEL:-}" ] &&
+        printf 'BONSAI_DRAFT_MODEL=%s\n' "$BONSAI_DRAFT_MODEL"
 } > "$SETTINGS_TMP"
 mv "$SETTINGS_TMP" "$SETTINGS_FILE"
 

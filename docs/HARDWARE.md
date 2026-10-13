@@ -279,6 +279,37 @@ The thread result is worth stating plainly because the usual advice is to tune i
 every layer on the GPU, generation is bound by the GPU, and moving threads between 8 and
 16 changed nothing measurable (87.1 against 86.9 tok/s).
 
+### Speculative decoding: only with a purpose-trained drafter
+
+A draft model predicts the next few tokens cheaply and the target verifies them, which
+can multiply generation speed. The build supports it (`--model-draft`), and this project
+passes it through as `BONSAI_DRAFT_MODEL`.
+
+**It is only worth using with a matching `*-dspark-*` drafter.** PrismML publishes one
+for the 27B, `Ternary-Bonsai-27B-dspark-Q4_1.gguf` (1.9 GB). Nothing is published for
+the 8B or 1.7B.
+
+```bash
+# Download the drafter, then:
+BONSAI_DRAFT_MODEL=models/Ternary-Bonsai-27B-dspark-Q4_1.gguf ./scripts/bonsai start
+```
+
+**A smaller model from the same family does not work.** This was tested rather than
+assumed, because it looked promising: Bonsai 1.7B and Bonsai 8B are both `qwen3` with a
+shared tokenizer, so the vocabulary is compatible and the server loads without complaint.
+The measured result on the 8B at 8192, interleaved:
+
+| Config | pass 1 | pass 2 |
+|---|---|---|
+| no draft | 90.9 | 90.9 |
+| 1.7B draft, `n-max 3` | 87.2 | 91.0 |
+| 1.7B draft, `n-max 8` | 86.8 | 88.8 |
+
+No gain, and sometimes a loss. The 1.7B's predictions are rejected too often for the
+verification to pay for the drafting, which is exactly why the published drafters are
+trained against their specific target rather than being a smaller sibling. Treat
+"compatible vocabulary" as necessary but nowhere near sufficient.
+
 ### Trading context for memory
 
 Lowering the context shrinks the cache linearly, and stacks with the type:

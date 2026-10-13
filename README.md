@@ -359,6 +359,7 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | `BONSAI_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
 | `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
 | `BONSAI_MODELS_DIR` | `./models` | where models are stored |
+| `BONSAI_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
 | `HSA_OVERRIDE_GFX_VERSION` | unset | only if your gfx target is not covered |

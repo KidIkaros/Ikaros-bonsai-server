@@ -16,6 +16,7 @@
 #   BONSAI_KV_TYPE=q8_0     KV cache type: q8_0 (default), q4_0, iq4_nl, q5_0,
 #                           f16 to disable. See docs/HARDWARE.md.
 #   BONSAI_KV_TYPE_K / _V   set K and V independently (advanced)
+#   BONSAI_DRAFT_MODEL=path a *-dspark-* drafter, for speculative decoding
 #   BONSAI_MODELS_DIR=path  models directory
 #   BONSAI_EXTRA_ARGS="..." extra llama-server flags
 
@@ -115,6 +116,16 @@ if [ "$(kv_type_effective)" != "f16" ]; then
     KV_ARGS=(--cache-type-k "$KV_TYPE_K" --cache-type-v "$KV_TYPE_V")
 fi
 
+# Speculative decoding, when a drafter is configured. Refuse a missing file
+# here rather than letting the server fail on first request.
+DRAFT_ARGS=()
+if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
+    [ -f "$BONSAI_DRAFT_MODEL" ] ||
+        die "Draft model not found: $BONSAI_DRAFT_MODEL
+       Set BONSAI_DRAFT_MODEL to a GGUF, or unset it to disable drafting."
+    DRAFT_ARGS=(--model-draft "$BONSAI_DRAFT_MODEL")
+fi
+
 # Only pass --n-gpu-layers when there is actually a GPU backend in play.
 NGL_ARGS=()
 case "$BACKEND" in
@@ -137,6 +148,7 @@ CMD=(
     --no-warmup
     --jinja
     "${KV_ARGS[@]}"
+    "${DRAFT_ARGS[@]}"
     "${NGL_ARGS[@]}"
     "${EXTRA_ARGS[@]}"
 )
@@ -146,6 +158,9 @@ printf '  %s\n' "${C_DIM}${CMD[*]}${C_RESET}"
 echo ""
 info "Backend     : $BACKEND"
 info "Models dir  : $MODELS_DIR  ($_gguf_count file(s))"
+if [ -n "${BONSAI_DRAFT_MODEL:-}" ]; then
+    info "Draft model : $(basename "$BONSAI_DRAFT_MODEL")  (speculative decoding)"
+fi
 if [ -n "${_auto_note:-}" ]; then
     info "KV cache    : $(kv_type_effective)  (auto: $_auto_reason)"
 else
