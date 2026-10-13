@@ -275,8 +275,20 @@ if [ "$TUNE" = 1 ]; then
     dim "  Each row is a full model load and a $TUNE_TOKENS-token generation."
     dim "  Numbers move a few percent between runs, so treat small gaps as noise."
 
-    _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
-    [ -n "$_other" ] && warn "Port $BONSAI_PORT is held (pid $_other); it may limit free memory."
+    # A benchmark needs free memory, not just total. Measuring while something
+    # else holds the GPU produces numbers that do not reproduce: that is exactly
+    # how an earlier run reported f16 KV as slower when it is in fact faster.
+    _free="$(free_vram_gb || true)"
+    if [ -n "$_free" ]; then
+        info "Free VRAM: ${_free} GB of ${VRAM_GB} GB"
+        if awk -v f="$_free" 'BEGIN { exit !(f < 8) }'; then
+            warn "Less than 8 GB of VRAM is free, so these numbers may not reproduce."
+            dim "  Another process is holding memory. Stop it first for a clean run:"
+            _other="$(lsof -ti "tcp:$BONSAI_PORT" 2>/dev/null | head -1 || true)"
+            [ -n "$_other" ] && dim "    something is on port $BONSAI_PORT (pid $_other)"
+            dim "    ./scripts/bonsai stop   if this repo's server is the one running"
+        fi
+    fi
 
     _results="$STATE_DIR/tune-results.tsv"
     : > "$_results"
@@ -339,19 +351,30 @@ if [ "$TUNE" = 1 ]; then
     _blabel="$(printf '%s' "$_best" | cut -f2)"
     _benv="$(printf '%s' "$_best" | cut -f4)"
 
-    printf '  %-40s %10s %10s\n' "ranked" "tok/s" "vs default"
-    printf '  %s\n' "------------------------------------------------------------"
+    printf '  %-38s %8s %9s  %s\n' "fastest first" "tok/s" "vs now" "verdict"
+    printf '  %s\n' "----------------------------------------------------------------------"
     sort -rn "$_results" | while IFS=$'\t' read -r _t _l _k _e; do
         _rel=""
+        _verdict=""
         if [ -n "$_base" ]; then
             _rel="$(awk -v a="$_t" -v b="$_base" 'BEGIN { printf "%.2fx", (b > 0 ? a/b : 1) }')"
+            if awk -v a="$_t" -v b="$_base" 'BEGIN { exit !(a > b * 1.03) }'; then
+                _verdict="use this"
+            elif awk -v a="$_t" -v b="$_base" 'BEGIN { exit !(a < b * 0.97) }'; then
+                _verdict="slower, do not use"
+            else
+                _verdict="same as now"
+            fi
         fi
-        printf '  %-40s %10s %10s\n' "$_l" "$_t" "$_rel"
+        printf '  %-38s %8s %9s  %s\n' "$_l" "$_t" "$_rel" "$_verdict"
     done
 
     echo ""
+    dim "  'vs now' compares against the current default. Below 1.00x means that"
+    dim "  option is slower, so nothing is lost by leaving it alone."
+    echo ""
     if [ "$_blabel" = "q8_0 KV, ubatch 512 (default)" ]; then
-        info "The defaults are already the fastest of these on this machine."
+        info "The current default is already the fastest of these on this machine."
     else
         info "Fastest: $_blabel at ${_btps} tok/s."
     fi

@@ -343,6 +343,17 @@ kv_placement() {
     }'
 }
 
+# free_vram_gb - VRAM currently unused, in GB, or nothing when unknown.
+# A benchmark needs free memory, not just total: another service holding VRAM
+# squeezes allocations and produces numbers that do not reproduce.
+free_vram_gb() {
+    local _used _total
+    _used="$(cat /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | head -1 || true)"
+    _total="$(cat /sys/class/drm/card*/device/mem_info_vram_total 2>/dev/null | head -1 || true)"
+    [ -n "$_used" ] && [ -n "$_total" ] || return 1
+    awk -v u="$_used" -v t="$_total" 'BEGIN { printf "%.1f", (t - u) / 1073741824 }'
+}
+
 # model_size_bytes MODEL - file size, or 0.
 model_size_bytes() {
     stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || echo 0
