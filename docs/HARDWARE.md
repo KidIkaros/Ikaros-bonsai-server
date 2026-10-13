@@ -357,11 +357,22 @@ RX 9060 XT:
 The control matters here: rebuilding the same tree with the change reverted returns 36.3
 and 41.4, so the regression is the change and not the build configuration.
 
-The likely reason is that the kernel's geometry is tuned for NVIDIA's 32-lane warps and its
-planar activation layout suits NVIDIA's memory system. On AMD's 64-lane wavefronts it is a
-32% loss at one column and a 5.6x loss at the two-column batches MTP needs. That is also
-why the published +24% for MTP is NVIDIA-specific: their kernel helps there, while the same
-path hurts on AMD.
+**The wave size is not the reason**, and it is worth recording because it was the obvious
+suspect and it is wrong. ggml defines `WARP_SIZE 32` unconditionally, including for HIP,
+while AMD defaults to 64-lane wavefronts, so compiling the backend for wave32
+(`-mno-wavefrontsize64`) looked like it should close the gap. It does not:
+
+| Build | no MTP | `draft-mtp n-max 1` |
+|---|---|---|
+| stock, wave64 (default) | 36.1 | 41.0 |
+| stock, wave32 | 36.55 | 39.9 |
+| port, wave64 | 24.8 | 7.3 |
+| port, wave32 | 24.85 | 7.05 |
+
+Wave32 leaves the stock path unchanged and the ported path unchanged, so the loss is in the
+planar activation layout and the kernel's geometry rather than the wavefront width. That is
+also why the published +24% for MTP is NVIDIA-specific: their kernel helps there, while the
+same path hurts on AMD.
 
 So the port is not shipped. On AMD, MTP with the stock path is the win, and it is the +6 to
 +13% measured above.
