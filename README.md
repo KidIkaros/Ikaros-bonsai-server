@@ -206,6 +206,7 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
 | [docs/HERMES.md](docs/HERMES.md) | provider wiring, context requirements, model ids |
 | [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) | the patched source build |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | when something goes wrong |
+| [docs/ROTORQUANT-ASSESSMENT.md](docs/ROTORQUANT-ASSESSMENT.md) | why RotorQuant/PlanarQuant were not adopted |
 
 ## How this relates to other projects
 

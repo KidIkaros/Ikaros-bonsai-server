@@ -191,6 +191,15 @@ dense/GQA attention path, which includes the attention sub-cache of hybrid model
 Bonsai 2; MLA and other specialized variants are not covered. A bias is valid only for
 the model and K cache type it was built for.
 
+### Why not RotorQuant / PlanarQuant / IsoQuant?
+
+They aim at the same problem - smaller KV cache with less quality loss - and the
+underlying idea is sound. They are not adopted here because their llama.cpp implementation
+is a competing rotation scheme in the same file PrismML already rotates in, and it would
+mean rebasing thousands of lines of kernels across CPU, CUDA and Metal onto a five-month
+newer tree. The full evidence, including what to watch for instead, is in
+[ROTORQUANT-ASSESSMENT.md](ROTORQUANT-ASSESSMENT.md).
+
 ### Per model
 
 Assuming the defaults: **65536 context and `q8_0` KV**.
