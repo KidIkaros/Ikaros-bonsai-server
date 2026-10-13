@@ -14,7 +14,7 @@ unset _common_dir
 # Record which settings the caller supplied before any default is applied below.
 # Without this, load_settings cannot tell a deliberate override from a default,
 # and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
-_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX"
+_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_THREADS BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX"
 _BONSAI_FROM_ENV=""
 for _v in $_BONSAI_SETTINGS; do
     if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
@@ -52,6 +52,10 @@ BONSAI_DRAFT_MODEL="${BONSAI_DRAFT_MODEL:-}"
 BONSAI_PORT="${BONSAI_PORT:-8081}"
 BONSAI_CTX="${BONSAI_CTX:-65536}"
 BONSAI_NGL="${BONSAI_NGL:-99}"
+# Host threads for the CPU scheduler. Defaults to all logical cores. Under full
+# GPU offload this is measured as noise; on CPU-only and partial-offload builds
+# it is often the largest lever, so it is a setting rather than a constant.
+BONSAI_THREADS="${BONSAI_THREADS:-$(nproc 2>/dev/null || echo 4)}"
 
 # KV cache quantization. At the 65536 context Hermes requires, the cache is the
 # single biggest consumer of VRAM and q8_0 halves it at negligible quality cost,
@@ -126,6 +130,122 @@ load_settings() {
         [ "$_skip" = 1 ] && continue
         export "$_key=$_val"
     done < "$SETTINGS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Settings file helpers (used by `bonsai set` and `bonsai apply`)
+# ---------------------------------------------------------------------------
+
+# settings_set KEY VALUE - write one KEY=VALUE into the settings file,
+# replacing any prior value for that key and preserving every other line.
+settings_set() {
+    mkdir -p "$STATE_DIR"
+    local _k="$1" _v="$2" _tmp="${SETTINGS_FILE}.set"
+    touch "$SETTINGS_FILE" 2>/dev/null || : > "$SETTINGS_FILE"
+    grep -v "^${_k}=" "$SETTINGS_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
+    printf '%s=%s\n' "$_k" "$_v" >> "$_tmp"
+    mv "$_tmp" "$SETTINGS_FILE"
+}
+
+# settings_unset KEY [KEY...] - remove these keys from the settings file.
+settings_unset() {
+    mkdir -p "$STATE_DIR"
+    local _tmp="${SETTINGS_FILE}.unset" _k
+    touch "$SETTINGS_FILE" 2>/dev/null || : > "$SETTINGS_FILE"
+    cp "$SETTINGS_FILE" "$_tmp"
+    for _k in "$@"; do
+        grep -v "^${_k}=" "$_tmp" > "$_tmp.2" && mv "$_tmp.2" "$_tmp" || : > "$_tmp"
+    done
+    mv "$_tmp" "$SETTINGS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Tune result persistence
+# ---------------------------------------------------------------------------
+
+TUNE_BEST_FILE="$STATE_DIR/tune-best.env"
+
+# write_tune_best ENVSTRING BACKEND - record the winning config of a
+# `bonsai tune` run. ENVSTRING is the variant's KEY=VALUE settings (spec,
+# n-max, ubatch, kv type). Backended-tagged so a later run on a different GPU
+# does not apply a config measured under another backend. This is a record,
+# not an automatic apply; use `apply_tune_best` (or `./scripts/bonsai apply`).
+write_tune_best() {
+    local _env="$1" _backend="$2" _k
+    mkdir -p "$STATE_DIR"
+    {
+        printf '# Winner of the last `bonsai tune` run. Backended-tagged.\n'
+        printf '# Apply safely with:  ./scripts/bonsai apply\n'
+        printf 'BONSAI_TUNED_BACKEND=%s\n' "$_backend"
+        printf 'BONSAI_TUNED_AT=%s\n' "$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo now)"
+        # Emit each KEY=VALUE the winner used. Start from a clean slate so
+        # inherited ambient values (e.g. the BONSAI_THREADS default) are not
+        # recorded as part of the winner. Then parse ENVSTRING with eval so
+        # quoted values like BONSAI_EXTRA_ARGS="--ubatch-size 256" come through.
+        ( unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
+                BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
+            eval "$_env" 2>/dev/null || true
+            for _k in BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
+                      BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS; do
+                [ -n "${!_k}" ] && printf '%s=%s\n' "$_k" "${!_k}"
+            done
+            : # ensure the subshell returns success even if the last key was unset
+        )
+    } > "$TUNE_BEST_FILE"
+}
+
+# apply_tune_best - project the recorded winner onto the live settings file.
+# Only machine-level knobs safe in router mode are persisted: BONSAI_THREADS
+# and BONSAI_EXTRA_ARGS (ubatch). The KV cache type is left to `auto` (it is
+# model-size-dependent and must re-decide per model). Speculative-decode
+# settings are applied only when the backend matches the one the winner was
+# measured under - draft efficiency is backend-specific, and a cross-backend
+# apply would be slower, not faster.
+apply_tune_best() {
+    [ -f "$TUNE_BEST_FILE" ] || { warn "No tune result recorded. Run: ./scripts/bonsai tune"; return 1; }
+    [ -n "${BACKEND:-}" ]     || { warn "No backend loaded. Run: ./scripts/detect.sh"; return 1; }
+    # Clear ambient defaults first, so only the winner's recorded keys survive
+    # - e.g. BONSAI_THREADS is always set by common.sh, but a winner that did
+    # not measure threads must not drag the default into the settings file.
+    unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
+          BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_EXTRA_ARGS BONSAI_THREADS
+    # shellcheck source=/dev/null
+    . "$TUNE_BEST_FILE"
+    local _tuned_backend="${BONSAI_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
+    if [ -n "$_tuned_backend" ] && [ "$_tuned_backend" != "$BACKEND" ]; then
+        _skip_spec=1
+        warn "Tune result was measured on backend '$_tuned_backend' but this machine is '$BACKEND'."
+        warn "Speculative-decode settings were skipped; applying one of those would be slower here."
+    fi
+    # Safe, machine-level knobs.
+    [ -n "${BONSAI_THREADS:-}" ]     && { settings_set BONSAI_THREADS "$BONSAI_THREADS"; _applied=1; }
+    [ -n "${BONSAI_EXTRA_ARGS:-}" ]  && { settings_set BONSAI_EXTRA_ARGS "$BONSAI_EXTRA_ARGS"; _applied=1; }
+    # Speculative settings: backend-specific. Only apply when the backend
+    # matches the one the winner was measured under; otherwise drop any stale
+    # value so a config tuned for Vulkan, say, does not end up running on ROCm
+    # (where draft-n-max 2 is slower than baseline).
+    if [ "$_skip_spec" = 1 ]; then
+        if [ -n "${BONSAI_SPEC_TYPE:-}" ] || [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ]; then
+            settings_unset BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+            _did_specenv=""
+            [ -n "${BONSAI_SPEC_TYPE:-}" ] && _did_specenv="BONSAI_SPEC_TYPE=${BONSAI_SPEC_TYPE}"
+            [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && _did_specenv="${_did_specenv:+$_did_specenv }BONSAI_SPEC_DRAFT_N_MAX=${BONSAI_SPEC_DRAFT_N_MAX}"
+            dim "  To use it on this backend anyway (MTP models only), run:"
+            dim "    $_did_specenv ./scripts/start-server.sh"
+        fi
+    else
+        [ -n "${BONSAI_SPEC_TYPE:-}" ] && { settings_set BONSAI_SPEC_TYPE "$BONSAI_SPEC_TYPE"; _applied=1; }
+        [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && { settings_set BONSAI_SPEC_DRAFT_N_MAX "$BONSAI_SPEC_DRAFT_N_MAX"; _applied=1; }
+    fi
+    if [ "$_applied" = 0 ]; then
+        # Winner was the default; make sure no stale tuned values linger.
+        settings_unset BONSAI_THREADS BONSAI_EXTRA_ARGS BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        info "Tune winner was the default config; nothing to apply."
+    else
+        info "Applied the tune winner to $SETTINGS_FILE."
+        dim "  Restart to apply: ./scripts/bonsai restart"
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
