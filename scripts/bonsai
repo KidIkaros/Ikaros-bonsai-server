@@ -10,6 +10,7 @@
 #   ./scripts/bonsai set ctx 32768  change a setting
 #   ./scripts/bonsai speed          quick tokens/sec check against the running server
 #   ./scripts/bonsai fastest        every measured configuration, fastest first
+#   ./scripts/bonsai fastest --json same, as machine-readable JSON
 #   ./scripts/bonsai bench [model]  measure a model on this machine, one row
 #   ./scripts/bonsai identity [model]  is the MTP draft lossless on this backend?
 #   ./scripts/bonsai tune           find the fastest settings on this machine
@@ -302,10 +303,53 @@ except Exception:
     fastest)
         load_settings
         ensure_detect
+        # --json emits the measured rows as structured data for a script or a
+        # future skill to consume, without parsing the table. Same source, same
+        # numbers - a JSON row and a table row can never disagree.
+        _fast_json=0
+        for _a in "$@"; do
+            [ "$_a" = "--json" ] && _fast_json=1
+        done
+        _rows="$(speed_rows "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}")"
+
+        if [ "$_fast_json" = 1 ]; then
+            # Sorted by tok/s descending, same as the table. Fields match the
+            # cache columns; empty offload/acceptance emit as null, never as a
+            # guessed 0 - "not recorded" and "measured zero" are different.
+            printf '{'
+            printf '"backend":"%s",' "$(json_escape "${BACKEND:-unknown}")"
+            printf '"release":"%s",' "$(json_escape "${PRISM_RELEASE:-unknown}")"
+            printf '"card":"%s",' "$(json_escape "${GPU_NAME:-unknown}")"
+            printf '"measured":%s,' "$([ -n "$_rows" ] && echo true || echo false)"
+            printf '"rows":['
+            if [ -n "$_rows" ]; then
+                _first=1
+                printf '%s\n' "$_rows" | sort -t"$(printf '\t')" -k6,6rn |
+                    while IFS=$'\t' read -r _m _c _t _b _r _tps _ngl _acc; do
+                        [ "$_first" = 1 ] || printf ','
+                        _first=0
+                        printf '{'
+                        printf '"model":"%s",' "$(json_escape "$_m")"
+                        printf '"context":%s,' "${_c:-null}"
+                        printf '"kv_type":"%s",' "$(json_escape "$_t")"
+                        printf '"tok_s":%s,' "${_tps:-null}"
+                        printf '"offload_layers":%s,' "${_ngl:-null}"
+                        printf '"draft_acceptance":%s,' "${_acc:-null}"
+                        if [ -n "$_acc" ]; then
+                            printf '"draft_verdict":"%s"' "$(acceptance_verdict "$_acc")"
+                        else
+                            printf '"draft_verdict":"off"'
+                        fi
+                        printf '}'
+                    done
+            fi
+            printf ']}\n'
+            exit 0
+        fi
+
         step "Fastest known configuration"
         printf '  backend %s   release %s   card %s\n\n' \
             "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}" "${GPU_NAME:-unknown}"
-        _rows="$(speed_rows "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}")"
         if [ -z "$_rows" ]; then
             warn "No measured rows for this backend and release yet."
             echo ""
@@ -428,7 +472,7 @@ except Exception:
         ;;
 
     help|--help|-h|"")
-        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
         ;;
 
     completions)

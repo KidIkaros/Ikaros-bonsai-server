@@ -646,6 +646,17 @@ acceptance_verdict() {
     fi
 }
 
+# json_escape STRING - escape a string for embedding in a JSON double-quoted
+# scalar. GPU names carry brackets and parens ("TU106M [GeForce RTX 2070 ...]"),
+# and a model path can carry a backslash, so this is not optional. Only the
+# characters JSON requires escaped in a string are touched; everything else
+# passes through.
+json_escape() {
+    printf '%s' "${1:-}" |
+        sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' |
+        tr -d '\000-\010\013\014\016-\037'
+}
+
 # first_model_id URL - the id of the first model a llama-server reports, or
 # nothing when it reports none. One place parses /v1/models: router mode
 # rejects a request that does not name a model, so every caller that talks to

@@ -325,7 +325,10 @@ percent). The first two are applied for you:
   [docs/SPEED-BEYOND-MTP-2026-10.md](docs/SPEED-BEYOND-MTP-2026-10.md) for the
   measurements and the other model-file-independent speed levers.
 
-`fastest` reads only rows this machine measured, on this backend and release:
+`fastest` reads only rows this machine measured, on this backend and release.
+`fastest --json` emits the same rows as JSON for a script or agent to consume
+(`rows[].tok_s`, `draft_acceptance`, `offload_layers`; unrecorded fields are
+`null`, never a guessed `0`):
 
 ```
   backend cuda   release prism-b10772-e8fd209   card GeForce RTX 2070

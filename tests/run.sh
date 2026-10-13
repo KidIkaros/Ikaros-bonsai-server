@@ -1331,6 +1331,49 @@ else
     fail "bonsai help should document completions"
 fi
 
+group "fastest --json"
+
+# Machine-readable output: a script or skill must be able to consume the
+# measured rows without parsing the table. The bar is that it PARSES, not
+# just that it prints JSON-looking text.
+_fj="$(mktemp -d)"
+_fj_probe() {
+    BONSAI_STATE_DIR="$_fj" PRISM_RELEASE="prism-b10772-e8fd209" \
+        BACKEND="$1" bash -c ". scripts/lib/common.sh; $2" 2>/dev/null
+}
+_fj_probe cuda 'speed_set "m-lean.gguf" 65536 q4_0 46.1 cuda prism-b10772-e8fd209 36 0.74'
+_fj_probe cuda 'speed_set baseline.gguf 65536 q8_0 40.0 cuda prism-b10772-e8fd209 36'
+_fj_out="$(BONSAI_STATE_DIR="$_fj" "$SCRIPTS/bonsai" fastest --json 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1; then
+    if printf '%s' "$_fj_out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        pass "fastest --json parses as JSON"
+    else
+        fail "fastest --json does not parse" "$_fj_out"
+    fi
+    # The parsed shape must carry the fields a consumer needs.
+    assert_eq "json reports the row count" "2" \
+        "$(printf '%s' "$_fj_out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rows"]))' 2>/dev/null)"
+    assert_eq "the fastest row is first" "m-lean.gguf" \
+        "$(printf '%s' "$_fj_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0]["model"])' 2>/dev/null)"
+    assert_eq "acceptance is a number when recorded" "0.74" \
+        "$(printf '%s' "$_fj_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0]["draft_acceptance"])' 2>/dev/null)"
+    # An unrecorded acceptance must be null, never a guessed 0.
+    assert_eq "unrecorded acceptance is null, not zero" "None" \
+        "$(printf '%s' "$_fj_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][1]["draft_acceptance"])' 2>/dev/null)"
+    assert_eq "a no-draft row is marked off" "off" \
+        "$(printf '%s' "$_fj_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][1]["draft_verdict"])' 2>/dev/null)"
+else
+    pass "fastest --json (skipped: needs python3)"
+fi
+# The empty state must still be valid JSON, or a script consuming it crashes.
+_fj_empty="$(BONSAI_STATE_DIR="$(mktemp -d)" "$SCRIPTS/bonsai" fastest --json 2>/dev/null || true)"
+if printf '%s' "$_fj_empty" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["rows"] == []' 2>/dev/null; then
+    pass "empty fastest --json is valid JSON with no rows"
+else
+    fail "empty fastest --json must be valid JSON" "$_fj_empty"
+fi
+rm -rf "$_fj"
+
 group "script syntax"
 
 _syntax_fail=""
