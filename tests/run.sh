@@ -33,8 +33,10 @@ done
 
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { PASS=$((PASS + 1)); printf '  \033[32mok\033[0m   %s\n' "$1"; }
+skip() { SKIP=$((SKIP + 1)); printf '  \033[33mskip\033[0m %s\n' "$1"; }
 fail() {
     FAIL=$((FAIL + 1))
     printf '  \033[31mFAIL\033[0m %s\n' "$1"
@@ -344,21 +346,36 @@ with socketserver.TCPServer(('127.0.0.1', $FOREIGN_PORT), http.server.SimpleHTTP
     h.serve_forever()
 " >/dev/null 2>&1 &
     _foreign=$!
-    for _ in $(seq 1 20); do
-        lsof -ti "tcp:$FOREIGN_PORT" >/dev/null 2>&1 && break
-        sleep 0.5
+    # Wait until the foreign server is actually accepting connections, not just
+    # until lsof returns - lsof can see the socket before serve_forever accepts,
+    # so the old lsof poll intermittently proceeded before the server was up and
+    # read stop-server's correct "nothing to stop" as a coin-flip. Poll the port
+    # itself (/dev/tcp) so readiness means "a client can connect".
+    _ready=0
+    for _ in $(seq 1 40); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$FOREIGN_PORT") 2>/dev/null; then
+            exec 3>&- 3<&- 2>/dev/null
+            _ready=1
+            break
+        fi
+        kill -0 "$_foreign" 2>/dev/null || break
+        sleep 0.25
     done
 
-    if KILN_PORT=$FOREIGN_PORT "$SCRIPTS/stop-server.sh" >/dev/null 2>&1; then
-        fail "stop-server.sh must refuse to stop a foreign process"
-    else
-        pass "stop-server.sh refuses a foreign process"
-    fi
+    if [ "$_ready" = 1 ]; then
+        if KILN_PORT=$FOREIGN_PORT "$SCRIPTS/stop-server.sh" >/dev/null 2>&1; then
+            fail "stop-server.sh must refuse to stop a foreign process"
+        else
+            pass "stop-server.sh refuses a foreign process"
+        fi
 
-    if kill -0 "$_foreign" 2>/dev/null; then
-        pass "foreign process left running"
+        if kill -0 "$_foreign" 2>/dev/null; then
+            pass "foreign process left running"
+        else
+            fail "foreign process was killed"
+        fi
     else
-        fail "foreign process was killed"
+        skip "stop-server foreign-process test (no listener on $FOREIGN_PORT)"
     fi
 
     kill "$_foreign" 2>/dev/null || true
@@ -2073,5 +2090,9 @@ fi
 
 # ---------------------------------------------------------------------------
 
-printf '\n\033[1m%s passed, %s failed\033[0m\n' "$PASS" "$FAIL"
+if [ "$SKIP" -gt 0 ]; then
+    printf '\n\033[1m%s passed, %s failed, %s skipped\033[0m\n' "$PASS" "$FAIL" "$SKIP"
+else
+    printf '\n\033[1m%s passed, %s failed\033[0m\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]
