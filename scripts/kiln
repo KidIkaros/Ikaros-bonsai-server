@@ -472,6 +472,8 @@ except Exception:
         ;;
 
     help|--help|-h|"")
+        kiln_logo
+        echo
         sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
         ;;
 

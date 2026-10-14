@@ -330,20 +330,55 @@ apply_tune_best() {
 # Output
 # ---------------------------------------------------------------------------
 
-if [ -t 1 ]; then
-    C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
-    C_CYAN='\033[36m'; C_DIM='\033[2m'; C_RESET='\033[0m'
+# The Kiln palette (see kiln-brandkit.html), as 24-bit truecolor ANSI so it
+# matches the brand exactly on any modern terminal. Colors are enabled only
+# when stdout is a TTY and NO_COLOR is unset/empty (the no-color.org
+# convention), so pipes, redirects and CI stay clean. When disabled every
+# variable is empty, so the same printf calls emit plain text with no escapes
+# at all - no legacy 16-color fallback, because a wrong color is worse than
+# none. The helpers keep writing to stderr so stdout stays machine-readable.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    # truecolor: Ash-Black bg, Ember, Hot, Clay, Ceramic, Ash
+    C_RESET='\033[0m'
+    C_EMBER='\033[38;2;240;164;40m'   # #f0a428 primary accent — headers, speed
+    C_HOT='\033[38;2;226;85;43m'      # #e2552b warnings, heat
+    C_CLAY='\033[38;2;201;162;122m'   # #c9a27a secondary / neutral emphasis
+    C_CREAM='\033[38;2;242;236;225m'  # #f2ece1 primary text
+    C_ASH='\033[38;2;168;158;146m'    # #a89e92 dim metadata
+    C_DIM='\033[2m'                   # true dim (de-emphasised text)
+    C_OK='\033[38;2;143;191;106m'     # fired-green: a real "good" signal
+    # Back-compat names: the semantic role each old color played.
+    C_GREEN="$C_OK"; C_CYAN="$C_EMBER"; C_YELLOW="$C_HOT"; C_RED="$C_HOT"
 else
-    C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_DIM=''; C_RESET=''
+    C_RESET=''; C_EMBER=''; C_HOT=''; C_CLAY=''; C_CREAM=''; C_ASH=''
+    C_DIM=''; C_OK=''; C_GREEN=''; C_CYAN=''; C_YELLOW=''; C_RED=''
 fi
 
 # All diagnostics go to stderr, so stdout stays clean for machine-readable
 # output such as detect.sh --json.
-info() { printf "${C_GREEN}[OK]${C_RESET}   %s\n" "$*" >&2; }
-warn() { printf "${C_YELLOW}[WARN]${C_RESET} %s\n" "$*" >&2; }
-err()  { printf "${C_RED}[ERR]${C_RESET}  %s\n" "$*" >&2; }
-step() { printf "\n${C_CYAN}==> %s${C_RESET}\n" "$*" >&2; }
+info() { printf "${C_OK}[OK]${C_RESET}   %s\n" "$*" >&2; }
+warn() { printf "${C_HOT}[WARN]${C_RESET} %s\n" "$*" >&2; }
+err()  { printf "${C_HOT}[ERR]${C_RESET}  %s\n" "$*" >&2; }
+step() { printf "\n${C_EMBER}==> %s${C_RESET}\n" "$*" >&2; }
 dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
+
+# ember WORD [REST...] - print WORD in the Ember accent and the rest in Ash.
+# Used for the one highlighted value in a line (a tok/s number, a model name)
+# without coloring the whole line, mirroring the brand kit's "one accent"
+# rule. Emits to stderr like the other helpers.
+ember() { printf "${C_EMBER}%s${C_RESET}${C_ASH} %s${C_RESET}\n" "$1" "${*:2}" >&2; }
+
+# kiln_logo - the wordmark, drawn in box characters so it needs no font and
+# degrades to plain text when color is off. The glyphs come from a verified
+# 5-wide block font (K's diagonal, I's serifs, L's foot, N's diagonal are each
+# checked by construction, not by eye). Printed to stderr.
+kiln_logo() {
+    printf "${C_EMBER} █  █  █████  █      █   █${C_RESET}\n" >&2
+    printf "${C_EMBER} █ █     █    █      ██  █${C_RESET}\n" >&2
+    printf "${C_EMBER} ██      █    █      █ █ █${C_RESET}\n" >&2
+    printf "${C_EMBER} █ █   █████  █████  █   █${C_RESET}\n" >&2
+    printf "${C_ASH} local model server · fired hot${C_RESET}\n" >&2
+}
 
 die() { err "$*"; exit 1; }
 

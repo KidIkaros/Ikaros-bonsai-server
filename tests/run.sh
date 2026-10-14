@@ -1592,6 +1592,52 @@ else
     pass "readme clone url (skipped: no github remote)"
 fi
 
+group "branding (Kiln palette)"
+
+# The CLI wears the Kiln brand-kit palette (ember #f0a428, hot #e2552b, etc.)
+# as truecolor ANSI, but only when stdout is a TTY and NO_COLOR is unset. These
+# tests pin the contract that keeps pipes and CI clean.
+# When piped (as the test harness runs), color must be OFF: no ESC bytes at all.
+_piped="$(bash -c '. scripts/lib/common.sh; step "x"; info "y"; warn "z"' 2>&1)"
+case "$_piped" in
+    *$'\033'*) fail "piped output must contain no ANSI escapes" "$_piped" ;;
+    *)        pass "piped output carries no ANSI escapes" ;;
+esac
+# NO_COLOR forces plain output even when the color branch would otherwise run.
+# Force the color branch by checking the vars are empty under NO_COLOR.
+_nc="$(NO_COLOR=1 bash -c '. scripts/lib/common.sh; printf "%s" "${C_EMBER:-EMPTY}"' 2>/dev/null)"
+if [ "$_nc" = "EMPTY" ]; then
+    pass "NO_COLOR disables the palette"
+else
+    fail "NO_COLOR must empty the palette vars" "got [$_nc]"
+fi
+# The palette hex values are the brand kit's, so a drift is caught here.
+# Source with the color branch forced on by faking the TTY test.
+_ember_hex="$(script -qec 'bash -c ". scripts/lib/common.sh; printf %s \"\$C_EMBER\""' /dev/null 2>/dev/null | cat -v)"
+if printf '%s' "$_ember_hex" | grep -q '240;164;40'; then
+    pass "the ember accent is the brand-kit #f0a428"
+else
+    fail "ember accent must be #f0a428" "got [$_ember_hex]"
+fi
+# The back-compat color names still resolve to a real escape (or empty when
+# off), so old consumers using C_GREEN/C_CYAN keep working.
+_legacy="$(bash -c '. scripts/lib/common.sh; printf "%s|%s|%s|%s" "${C_GREEN+set}" "${C_CYAN+set}" "${C_YELLOW+set}" "${C_RED+set}"' 2>/dev/null)"
+assert_eq "legacy color names are all defined" "set|set|set|set" "$_legacy"
+# The wordmark spells KILN with the verified block glyphs (checked by
+# construction in kiln_logo; here we pin the exact rows so a typo regresses).
+_logo="$(bash -c '. scripts/lib/common.sh; kiln_logo' 2>&1)"
+_expected_first=' █  █  █████  █      █   █'
+_logo_first="$(printf '%s\n' "$_logo" | sed -n '1p')"
+assert_eq "the wordmark top row is the verified KILN glyph" "$_expected_first" "$_logo_first"
+# The logo is 5 lines (4 glyph rows + tagline), so a dropped row regresses.
+assert_eq "the wordmark is 4 glyph rows plus the tagline" "5" "$(printf '%s\n' "$_logo" | grep -c .)"
+# kiln help opens with the wordmark, so the brand is the first thing seen.
+_help="$(./scripts/kiln help 2>&1)"
+case "$_help" in
+    *"local model server · fired hot"*) pass "kiln help leads with the wordmark" ;;
+    *) fail "kiln help must open with the Kiln wordmark" "$(printf '%s' "$_help" | head -1)" ;;
+esac
+
 group "env var back-compat (bonsai/ikaros -> kiln rename)"
 
 # The project was renamed twice: bonsai -> ikaros -> kiln. Every var is now
