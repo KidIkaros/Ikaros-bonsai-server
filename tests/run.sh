@@ -1045,23 +1045,27 @@ group "spec stack (upstream ngram-mod default)"
 # PrismML ternary models ngram-mod silently no-ops (accepted, zero log lines,
 # draft_n null, decode identical to none), so the tool removes it first.
 #
-# Verified with a grep on the script rather than by executing a server: the
-# invariant is the emitted command line.
+# The stack decision, gated exactly as start-server.sh gates it: ngram-mod is
+# removed only when the stack is not "upstream" AND the binary supports the
+# flag. server_supports is stubbed here so the logic (not the real binary) is
+# under test; the behavioural CMD test covers the real-binary omission.
 _ss_args() {
-    KILN_SPEC_STACK="$1" bash -c '
+    KILN_SPEC_STACK="$1" SUPPORTS="$2" bash -c '
         set -euo pipefail
-        # Emit the DRAFT_ARGS the way start-server.sh builds them, without the
-        # parts that need a real binary: the flag emission is the contract.
         DRAFT_ARGS=()
-        if [ "${KILN_SPEC_STACK:-kiln}" != "upstream" ]; then
+        server_supports() { [ "$SUPPORTS" = "yes" ]; }
+        if [ "${KILN_SPEC_STACK:-kiln}" != "upstream" ] && server_supports --no-spec-type; then
             DRAFT_ARGS+=(--no-spec-type ngram-mod)
         fi
         printf "%s" "${DRAFT_ARGS[*]}"
     '
 }
-assert_eq "the default stack removes ngram-mod" "--no-spec-type ngram-mod" "$(_ss_args kiln)"
-assert_eq "an unset stack removes ngram-mod too" "--no-spec-type ngram-mod" "$(_ss_args "")"
-assert_eq "the upstream stack keeps ngram-mod" "" "$(_ss_args upstream)"
+assert_eq "the default stack removes ngram-mod when supported" "--no-spec-type ngram-mod" "$(_ss_args kiln yes)"
+assert_eq "an unset stack removes ngram-mod too when supported" "--no-spec-type ngram-mod" "$(_ss_args "" yes)"
+assert_eq "the upstream stack keeps ngram-mod" "" "$(_ss_args upstream yes)"
+# The gate: a binary without the flag never gets it, even on the default stack.
+assert_eq "a binary without --no-spec-type omits it" "" "$(_ss_args kiln no)"
+assert_eq "an unset stack also omits it without the flag" "" "$(_ss_args "" no)"
 
 # The documented override must survive in the help text, where a user looks.
 if grep -q 'KILN_SPEC_STACK' "$SCRIPTS/start-server.sh"; then
@@ -1513,11 +1517,15 @@ if _has "--flash-attn on"; then
 else
     fail "emitted command must carry --flash-attn on" "$_argv"
 fi
-# --no-spec-type ngram-mod stops upstream's default drafters stacking on.
-if _has "--no-spec-type ngram-mod"; then
-    pass "the emitted command removes upstream ngram-mod"
+# --no-spec-type ngram-mod stops upstream's default drafters stacking on, but
+# only on binaries that support the flag. The pinned prebuilt predates it, so
+# start-server gates it on server_supports --no-spec-type. This fake binary's
+# --help does not advertise the flag, so the emitted command must OMIT it -
+# emitting it unconditionally was the bug that made the server refuse to start.
+if _has "--no-spec-type"; then
+    fail "a binary without --no-spec-type must not be passed it" "$_argv"
 else
-    fail "emitted command must carry --no-spec-type ngram-mod" "$_argv"
+    pass "no-spec-type is omitted when the binary lacks the flag"
 fi
 # Loopback by default; a local server with no auth must not bind 0.0.0.0.
 if _has "--host 127.0.0.1"; then

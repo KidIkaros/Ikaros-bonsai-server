@@ -66,6 +66,18 @@ load_detect
 SERVER_BIN="$(llama_server_bin)" || die "No llama-server installed for backend '$BACKEND'.
        Run: ./scripts/fetch-binary.sh"
 
+# server_supports FLAG - succeed when the installed llama-server binary accepts
+# FLAG. llama.cpp adds flags over time and the pinned prebuilt may predate one;
+# emitting an unsupported flag makes the server refuse to start with "invalid
+# argument". Gate every flag that is not universal on this check (--no-spec-type
+# below, --moe-cache-mib further down) so a flag lands only when the binary can
+# parse it. --help is cached once per run.
+_supports_help=""
+server_supports() {
+    [ -n "$_supports_help" ] || _supports_help="$("$SERVER_BIN" --help 2>&1)"
+    printf '%s' "$_supports_help" | grep -q -- "$1"
+}
+
 [ -d "$MODELS_DIR" ] || die "Models directory does not exist: $MODELS_DIR
        Run: ./scripts/get-models.sh"
 
@@ -220,7 +232,14 @@ fi
 # two drafters share one verify batch. KILN_SPEC_STACK=upstream keeps the
 # upstream stack for users who want it; otherwise ngram-mod is removed first,
 # and any explicit KILN_SPEC_TYPE is added on top.
-if [ "${KILN_SPEC_STACK:-kiln}" != "upstream" ]; then
+#
+# --no-spec-type only exists on newer llama.cpp builds; the pinned prebuilt
+# (prism-b10772) predates it. Gate on binary support, exactly like
+# --moe-cache-mib below: emitting it unconditionally made the server refuse to
+# start with "invalid argument: --no-spec-type" on that build. On a build
+# without the flag there is nothing to remove (no additive ngram-mod default
+# either), so skipping it is correct, not a silent behaviour change.
+if [ "${KILN_SPEC_STACK:-kiln}" != "upstream" ] && server_supports --no-spec-type; then
     DRAFT_ARGS+=(--no-spec-type ngram-mod)
 fi
 
@@ -273,7 +292,7 @@ if [ -n "${KILN_MOE_CACHE_MIB:-}" ]; then
         ''|*[!0-9]*) die "KILN_MOE_CACHE_MIB must be a number, got '$KILN_MOE_CACHE_MIB'.
        Example: ./scripts/kiln set moe-cache-mib 2048" ;;
     esac
-    if "$SERVER_BIN" --help 2>&1 | grep -q -- '--moe-cache-mib'; then
+    if server_supports --moe-cache-mib; then
         MOE_CACHE_ARGS=(--moe-cache-mib "$KILN_MOE_CACHE_MIB")
         info "MoE cache : ${KILN_MOE_CACHE_MIB} MiB (needs a build newer than $PRISM_RELEASE)"
     else
