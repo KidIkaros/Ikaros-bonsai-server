@@ -355,6 +355,14 @@ case "$MODE" in
         printf '  %s\n' "$_file"
         # Say WHY: param count + quant + VRAM fit, so the choice is legible.
         dim "  $(model_reason "$_file" "${VRAM_GB:-0}")"
+        # Vulkan has only partial PQ2_0/PTQ1_0 support. The interactive picker
+        # warns on this; so must --recommend, or an AMD/Intel box on the Vulkan
+        # backend silently gets a partially-supported quant and runs badly.
+        if [ "${BACKEND:-}" = "vulkan" ] && quant_needs_vulkan_warning "$_file"; then
+            warn "$_file uses $(quant_label "$_file"); Vulkan support for it is partial."
+            dim "  It may run slowly. A Q1_0/Q2_0 model is safer on Vulkan:"
+            dim "  ./scripts/get-models.sh --list   (pick a non-PQ2 entry)"
+        fi
         echo ""
         fetch "$_repo" "$_file" "$_size"
         ;;

@@ -1817,6 +1817,40 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "vulkan quant safety on the recommend path"
+
+# An AMD/Intel box on the Vulkan backend gets PQ2_0 from --recommend (the
+# recommended-small tag), and Vulkan only partially supports PQ2_0/PTQ1_0. The
+# interactive picker already warned; --recommend now must too, or a friend on
+# such a box silently runs a partially-supported quant. Pin that the warning
+# is present on BOTH paths.
+_n_vk="$(grep -c 'quant_needs_vulkan_warning' scripts/get-models.sh)"
+if [ "$_n_vk" -ge 2 ]; then
+    pass "the Vulkan quant warning guards both the picker and --recommend"
+else
+    fail "the Vulkan quant warning must guard --recommend too" "found $_n_vk, want 2"
+fi
+# The warning text names the safer alternative, not just the problem.
+if grep -A3 'quant_needs_vulkan_warning "$_file"' scripts/get-models.sh | grep -q 'Q1_0/Q2_0'; then
+    pass "the recommend-path warning names a safer quant"
+else
+    fail "the warning must name a safer quant" ""
+fi
+# Backend priority keeps ROCm ahead of Vulkan, so an AMD box with ROCm never
+# hits the Vulkan path at all.
+if grep -q 'BACKEND="rocm"' scripts/detect.sh && grep -q 'BACKEND="vulkan"' scripts/detect.sh; then
+    # rocm assignment appears before vulkan in the file => higher priority.
+    _rocm_ln="$(grep -n 'BACKEND="rocm"' scripts/detect.sh | head -1 | cut -d: -f1)"
+    _vk_ln="$(grep -n 'BACKEND="vulkan"' scripts/detect.sh | head -1 | cut -d: -f1)"
+    if [ "$_rocm_ln" -lt "$_vk_ln" ]; then
+        pass "detect prefers ROCm over Vulkan on AMD"
+    else
+        fail "ROCm must be tried before Vulkan" "rocm@$_rocm_ln vulkan@$_vk_ln"
+    fi
+else
+    fail "detect must assign both rocm and vulkan backends" ""
+fi
+
 group "diagnostic error log + report"
 
 # Errors are captured to a structured local log so a failure on hardware we
