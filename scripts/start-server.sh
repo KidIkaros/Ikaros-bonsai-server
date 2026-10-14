@@ -352,8 +352,12 @@ _mem_largest="$(find "$MODELS_DIR" -name '*.gguf' -not -name '*mmproj*' \
     sort -rn | head -1 | cut -f2)"
 if [ -n "$_mem_largest" ] && _mem_budget="$(kv_budget_gb 2>/dev/null)"; then
     _mem_w="$(awk -v b="$(model_size_bytes "$_mem_largest")" 'BEGIN{printf "%.2f", b/1073741824}')"
+    # kv_mib returns non-zero for an unmeasured model; under `set -e` +
+    # `pipefail` that aborts the whole script inside this assignment. The `||
+    # true` makes an unmeasured model yield empty (-> 0 below -> no warning),
+    # which is the intended silent skip, not a fatal error.
     _mem_kv="$(kv_mib "$_mem_largest" "$KILN_CTX" "${KILN_KV_TYPE:-q8_0}" 2>/dev/null |
-        awk '{printf "%.2f", $1/1024}')"
+        awk '{printf "%.2f", $1/1024}' || true)"
     _mem_kv="${_mem_kv:-0}"
     if awk -v w="$_mem_w" -v k="$_mem_kv" -v b="$_mem_budget" 'BEGIN{exit !(w+k > b)}'; then
         _mem_kind="VRAM"; [ "${BACKEND:-cpu}" = "cpu" ] && _mem_kind="RAM"

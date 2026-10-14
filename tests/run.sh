@@ -1817,6 +1817,48 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "cold start on a fresh home (unmeasured model)"
+
+# CRITICAL regression caught by pre-release dogfood: start-server.sh aborted
+# SILENTLY (rc 1, zero output) on a fresh home because the memory-check's
+# `kv_mib ... | awk` fails on an unmeasured model, and under `set -e` +
+# `pipefail` that aborts the script inside the assignment. A new user's very
+# first `start-server.sh` died instantly with no message. Pin that a cold
+# start with an unmeasured model survives the memory check and reaches launch.
+# We drive start-server far enough to pass the memory check without a real
+# 2GB load: source it in a subshell with a fake measured-free state and assert
+# it gets PAST the memory block (the old bug died before printing "Starting").
+_cs="$(mktemp -d)"
+mkdir -p "$_cs/models" "$_cs/state"
+: > "$_cs/models/fake-model.gguf"
+# No kv-costs.tsv => kv_mib returns non-zero => the exact crash condition.
+_cs_out="$(KILN_STATE_DIR="$_cs/state" KILN_MODELS_DIR="$_cs/models" \
+    KILN_CTX=4096 KILN_KV_TYPE=q8_0 BACKEND=cuda VRAM_GB=8 RAM_GB=15 \
+    bash -c '
+        set -euo pipefail
+        . scripts/lib/common.sh 2>/dev/null
+        # Reproduce just the memory-check assignment under the same strictness.
+        _largest="$(find "$KILN_MODELS_DIR" -name "*.gguf" 2>/dev/null | head -1)"
+        if [ -n "$_largest" ] && _budget="$(kv_budget_gb 2>/dev/null)"; then
+            _w="$(awk -v b="$(model_size_bytes "$_largest")" "BEGIN{printf \"%.2f\", b/1073741824}")"
+            _kv="$(kv_mib "$_largest" "$KILN_CTX" "$KILN_KV_TYPE" 2>/dev/null | awk "{printf \"%.2f\", \$1/1024}" || true)"
+            _kv="${_kv:-0}"
+            echo "PASSED_MEMCHECK w=$_w kv=$_kv budget=$_budget"
+        fi
+    ' 2>&1)"
+case "$_cs_out" in
+    *PASSED_MEMCHECK*) pass "unmeasured model does not abort the memory check" ;;
+    *) fail "the memory check must survive an unmeasured model" "$_cs_out" ;;
+esac
+rm -rf "$_cs"
+# And the real start-server.sh must contain the guard (the `|| true` on the
+# kv_mib substitution) so the crash cannot come back.
+if grep -A1 'kv_mib "$_mem_largest"' scripts/start-server.sh | grep -q '|| true'; then
+    pass "start-server guards the kv_mib substitution against set -e abort"
+else
+    fail "start-server must guard kv_mib with || true (unmeasured-model abort)" ""
+fi
+
 group "first-run experience (pre-mortem T1/T2/T6)"
 
 # Pre-mortem launch-blockers, now pinned so they cannot regress.

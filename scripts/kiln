@@ -365,6 +365,14 @@ except Exception:
         [ -n "$_model" ] || die "The server reported no models."
         step "Speed check"
         dim "  One short generation against the running server."
+        # Warm up first: the very first request after load pays cold-cache and
+        # kernel costs, so measuring it reports a misleadingly low number (a
+        # fresh-home cold start read 5.6 tok/s vs 57 steady-state). A throwaway
+        # generation absorbs that; the measured one below is the real rate.
+        curl -s --max-time 120 "http://127.0.0.1:$KILN_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' "$_model")" \
+            >/dev/null 2>&1 || true
         # Router mode rejects a request that does not name a model, so the id
         # from /v1/models goes into the payload - without it every check fails
         # with "model name is missing from the request", which reads as a
