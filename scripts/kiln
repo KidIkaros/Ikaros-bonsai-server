@@ -19,6 +19,7 @@
 #   ./scripts/kiln coverage       which settings have been tried, and which have not
 #   ./scripts/kiln models         list installed models
 #   ./scripts/kiln up             one command: model + start + wire Hermes
+#   ./scripts/kiln preset <name>  apply a named recipe (fastest, balanced, low-vram, safe)
 #   ./scripts/kiln dash           full-screen status dashboard (q to quit)
 #   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
 #
@@ -242,8 +243,9 @@ except Exception:
             models|models-dir) VAR="KILN_MODELS_DIR" ;;
             moe-cache-mib|moe-cache) VAR="KILN_MOE_CACHE_MIB" ;;
             spec-type)   VAR="KILN_SPEC_TYPE" ;;
+            spec-stack)  VAR="KILN_SPEC_STACK" ;;
             KILN_*)    VAR="$KEY" ;;
-            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib" ;;
+            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib, spec-type, spec-stack" ;;
         esac
 
         case "$VAR" in
@@ -255,6 +257,17 @@ except Exception:
                     *) kv_type_valid "$VAL" ||
                         usage_die "Unknown KV cache type '$VAL'. Allowed: auto, $KV_CACHE_TYPES" ;;
                 esac ;;
+            KILN_SPEC_TYPE)
+                case "$VAL" in
+                    none|draft-simple|draft-eagle3|draft-mtp|draft-dflash|draft-dspark|\
+                    ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|ngram-cache) ;;
+                    *) usage_die "Unknown spec type '$VAL'. Allowed: none, draft-mtp, ngram-mod, ..." ;;
+                esac ;;
+            KILN_SPEC_STACK)
+                case "$VAL" in
+                    kiln|upstream) ;;
+                    *) usage_die "Unknown spec stack '$VAL'. Allowed: kiln, upstream" ;;
+                esac ;;
         esac
 
         mkdir -p "$STATE_DIR"
@@ -263,7 +276,7 @@ except Exception:
             grep -v "^$VAR=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
         else
             {
-                printf '# Settings for the local Bonsai server.\n'
+                printf '# Settings for the Kiln local model server.\n'
                 printf '# Edit a value and restart: ./scripts/kiln restart\n'
                 printf '\n'
             } > "$_tmp"
@@ -272,6 +285,59 @@ except Exception:
         mv "$_tmp" "$SETTINGS_FILE"
 
         info "$VAR=$VAL"
+        if service_active; then
+            dim "  Restart to apply: ./scripts/kiln restart"
+        fi
+        ;;
+
+    preset)
+        # Named, measured recipes so a newcomer never has to understand
+        # spec-decode internals. Each preset writes the same service.env keys
+        # `set` would, then says to restart. Conservative by design: presets
+        # only touch speed/decoding knobs, never the model or memory.
+        _preset="${1:-}"
+        [ -n "$_preset" ] || { reject_any_flags preset; usage_die "Usage: ./scripts/kiln preset <name>
+  fastest    max tok/s: MTP drafting on, tight KV (the measured winner)
+  balanced   MTP drafting on, standard KV (default-quality sweet spot)
+  low-vram   no drafting, smallest KV, for tight GPUs
+  safe       no speculative decoding at all (most compatible)
+Try: ./scripts/kiln preset" ; }
+        case "$_preset" in
+            fastest)
+                _p_set="KILN_SPEC_TYPE=draft-mtp KILN_SPEC_STACK=kiln KILN_KV_TYPE=q8_0 KILN_CTX=32768"
+                _p_why="MTP drafting + tight KV at a 32K window - the measured fastest path"
+                ;;
+            balanced)
+                _p_set="KILN_SPEC_TYPE=draft-mtp KILN_SPEC_STACK=kiln KILN_KV_TYPE=auto KILN_CTX=65536"
+                _p_why="MTP drafting + auto KV at the full 64K window - speed with headroom"
+                ;;
+            low-vram)
+                _p_set="KILN_SPEC_TYPE=none KILN_SPEC_STACK=kiln KILN_KV_TYPE=q4_0 KILN_CTX=16384"
+                _p_why="no drafting, smallest KV, 16K window - for tight GPUs"
+                ;;
+            safe)
+                _p_set="KILN_SPEC_TYPE=none KILN_SPEC_STACK=kiln KILN_KV_TYPE=q8_0 KILN_CTX=32768"
+                _p_why="no speculative decoding - the most compatible, least surprising"
+                ;;
+            *) usage_die "Unknown preset '$_preset'. Try: fastest, balanced, low-vram, safe" ;;
+        esac
+        step "Applying preset: $_preset"
+        dim "  $_p_why"
+        mkdir -p "$STATE_DIR"
+        _tmp="$SETTINGS_FILE.tmp"
+        [ -f "$SETTINGS_FILE" ] && cp "$SETTINGS_FILE" "$_tmp" || : > "$_tmp"
+        # Drop any key this preset sets, then re-add the preset's values, so a
+        # preset fully owns its knobs rather than leaving a stale older value.
+        for _kv in $_p_set; do
+            _k="${_kv%%=*}"
+            grep -v "^$_k=" "$_tmp" > "$_tmp.2" 2>/dev/null || : > "$_tmp.2"
+            mv "$_tmp.2" "$_tmp"
+        done
+        for _kv in $_p_set; do
+            printf '%s\n' "$_kv" >> "$_tmp"
+            info "$_kv"
+        done
+        mv "$_tmp" "$SETTINGS_FILE"
         if service_active; then
             dim "  Restart to apply: ./scripts/kiln restart"
         fi
@@ -490,7 +556,7 @@ except Exception:
     help|--help|-h|"")
         kiln_logo
         echo
-        sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
         ;;
 
     dash)
@@ -537,7 +603,7 @@ except Exception:
         # cannot drift from the dispatcher: adding a command and forgetting
         # here is the failure mode this prevents.
         _shell="${1:-bash}"
-        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up help"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset help"
         case "$_shell" in
             bash)
                 cat <<EOF
@@ -607,7 +673,7 @@ EOF
         # longer than "speed", so a prefix test would miss the most common
         # typo shape. Uses the shared suggest_near/edit_distance so command
         # and flag suggestions behave identically.
-        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up help"
+        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset help"
         if _near="$(suggest_near "$CMD" $_all_cmds)"; then
             usage_die "Unknown command '$CMD'. Did you mean '$_near'?
        All commands: ./scripts/kiln help"

@@ -1817,6 +1817,53 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "presets, model reasoning, memory safety"
+
+# `kiln preset` applies named recipes so a newcomer never touches spec-decode
+# internals. Pin the contract with a throwaway state dir.
+_pv() { local d; d="$(mktemp -d)"; KILN_STATE_DIR="$d" ./scripts/kiln "$@" >/dev/null 2>&1; local rc=$?; echo "$rc"; rm -rf "$d"; }
+# Each preset applies and persists its knobs.
+assert_eq "preset fastest applies" "0" "$(_pv preset fastest)"
+assert_eq "preset balanced applies" "0" "$(_pv preset balanced)"
+assert_eq "preset low-vram applies" "0" "$(_pv preset low-vram)"
+assert_eq "preset safe applies" "0" "$(_pv preset safe)"
+# An unknown preset is a usage error (rc 2).
+assert_eq "an unknown preset is rejected" "2" "$(_pv preset bogus)"
+# A preset fully owns its knobs: it overwrites a stale prior value.
+_d="$(mktemp -d)"
+KILN_STATE_DIR="$_d" ./scripts/kiln set ctx 99999 >/dev/null 2>&1
+KILN_STATE_DIR="$_d" ./scripts/kiln preset balanced >/dev/null 2>&1
+assert_eq "a preset overwrites a stale ctx" "KILN_CTX=65536" "$(grep '^KILN_CTX=' "$_d/service.env")"
+# fastest turns MTP drafting on; safe turns it off - opposite ends, both real.
+KILN_STATE_DIR="$_d" ./scripts/kiln preset fastest >/dev/null 2>&1
+assert_eq "fastest enables draft-mtp" "KILN_SPEC_TYPE=draft-mtp" "$(grep '^KILN_SPEC_TYPE=' "$_d/service.env")"
+KILN_STATE_DIR="$_d" ./scripts/kiln preset safe >/dev/null 2>&1
+assert_eq "safe disables drafting" "KILN_SPEC_TYPE=none" "$(grep '^KILN_SPEC_TYPE=' "$_d/service.env")"
+rm -rf "$_d"
+# spec-type / spec-stack are now validated, not accepted blindly.
+assert_eq "set spec-type rejects garbage" "2" "$(_pv set spec-type bogus)"
+assert_eq "set spec-type accepts draft-mtp" "0" "$(_pv set spec-type draft-mtp)"
+assert_eq "set spec-stack rejects garbage" "2" "$(_pv set spec-stack bogus)"
+assert_eq "set spec-stack accepts upstream" "0" "$(_pv set spec-stack upstream)"
+# model_reason names params + quant + fit.
+_r1="$(bash -c '. scripts/lib/common.sh; model_reason "Ternary-Bonsai-8B-PQ2_0.gguf" 8' 2>/dev/null)"
+case "$_r1" in
+    *8B*PQ2_0*8\ GB*) pass "model_reason names params, quant, and VRAM fit" ;;
+    *) fail "model_reason should name 8B, PQ2_0, and 8 GB" "$_r1" ;;
+esac
+# The 27B-in-a-2-27B name reports 27B (last-B rule), not 2.
+_r2="$(bash -c '. scripts/lib/common.sh; model_reason "Ternary-Bonsai-2-27B-PQ2_0.gguf" 8' 2>/dev/null)"
+case "$_r2" in
+    *27B*) pass "model_reason picks the real param count from a 2-27B name" ;;
+    *) fail "model_reason should report 27B for a 2-27B model" "$_r2" ;;
+esac
+# CPU-only (VRAM 0) says it runs on system RAM, not a VRAM claim.
+_r3="$(bash -c '. scripts/lib/common.sh; model_reason "Bonsai-1.7B-Q1_0.gguf" 0' 2>/dev/null)"
+case "$_r3" in
+    *"CPU/system RAM"*) pass "model_reason handles CPU-only honestly" ;;
+    *) fail "model_reason should say CPU/system RAM when VRAM is 0" "$_r3" ;;
+esac
+
 group "hermes synergy (up / auto-wire)"
 
 # The goal: install synergizes with Hermes. `kiln up` is the one command that

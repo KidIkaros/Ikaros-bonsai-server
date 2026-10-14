@@ -309,6 +309,40 @@ case "$KILN_THREADS" in
     ''|*[!0-9]*) die "KILN_THREADS must be a number, got '$KILN_THREADS'.\n       Example: ./scripts/kiln set threads 8" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# Memory safety check (a balancing loop, not a quality cut)
+# ---------------------------------------------------------------------------
+# Router mode loads whatever is in the models dir. Before we launch, estimate
+# whether the largest model plus its KV cache fits the memory this machine
+# actually has, and WARN with the numbers if it does not - naming the next size
+# down. This never blocks the start (the user may know better, or want to try
+# anyway) and never changes quality settings; it only surfaces a risk the user
+# would otherwise discover as an OOM-kill or a silent fallback to CPU.
+#
+# Sizing: weights are the file size; KV cache is roughly ctx * kv_bytes. We
+# compare the total against VRAM when offloading to GPU (NGL > 0), else RAM.
+_check_mem_model="$(ls -S "$MODELS_DIR"/*.gguf 2>/dev/null | head -1)"
+if [ -n "$_check_mem_model" ]; then
+    _check_bytes="$(stat -c '%s' "$_check_mem_model" 2>/dev/null || stat -f '%z' "$_check_mem_model" 2>/dev/null || echo 0)"
+    _check_gb="$(awk -v b="$_check_bytes" 'BEGIN{printf "%.1f", b/1073741824}')"
+    # KV cache estimate: ctx tokens * ~0.5 MB at 64K q8_0 is already covered by
+    # the "room for KV cache" headroom below; keep the estimate coarse and
+    # clearly labelled as an estimate.
+    _kv_gb="$(awk -v c="$KILN_CTX" 'BEGIN{printf "%.1f", c*0.000008}')"  # ~8 KB/token q8_0
+    _need_gb="$(awk -v w="$_check_gb" -v k="$_kv_gb" 'BEGIN{printf "%.1f", w+k}')"
+    if [ "${KILN_NGL:-0}" -gt 0 ] 2>/dev/null && [ "${VRAM_GB:-0}" -gt 0 ] 2>/dev/null; then
+        _have="$VRAM_GB"; _kind="VRAM"
+    else
+        _have="${RAM_GB:-0}"; _kind="RAM"
+    fi
+    if [ "${_have:-0}" -gt 0 ] 2>/dev/null && \
+       awk -v n="$_need_gb" -v h="$_have" 'BEGIN{exit !(n > h)}'; then
+        warn "Memory: $(basename "$_check_mem_model") needs ~${_need_gb} GB (weights + KV) but this machine has ${_have} GB ${_kind}."
+        dim "  It may run slower (partial offload) or fail to load. A smaller quant fits better:"
+        dim "  ./scripts/get-models.sh --recommend"
+    fi
+fi
+
 CMD=(
     "$SERVER_BIN"
     --models-dir "$MODELS_DIR"

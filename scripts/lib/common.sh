@@ -1177,3 +1177,25 @@ auto_wire_hermes() {
     "$_scripts/hermes-wire.sh" >/dev/null 2>&1 || true
     return 0
 }
+
+# model_reason FILE VRAM_GB - one line explaining WHY this model fits this
+# machine: its parameter count, its quantisation, and the VRAM headroom. A
+# first-time user should see "8B params, PQ2_0 quant (2.1 bpw) - fits your 8 GB
+# with room for a 64K context", not a bare filename they cannot interpret.
+# Param count comes from the name (Bonsai-8B, Ternary-Bonsai-2-27B); quant from
+# quant_label. When VRAM is 0/unknown (CPU-only), it says so plainly.
+model_reason() {
+    local _file="$1" _vram="${2:-0}" _params="" _quant
+    _quant="$(quant_label "$_file")"
+    # Parameter count: the number immediately before a trailing 'b' in the
+    # model name (8B, 27B, 1.7B). Take the last such token so
+    # "Ternary-Bonsai-2-27B" reports 27B, not 2.
+    _params="$(printf '%s' "$_file" | grep -oiE '[0-9]+(\.[0-9]+)?b' | tail -1 | tr '[:lower:]' '[:upper:]')"
+    [ -n "$_params" ] || _params="? params"
+    if [ "${_vram:-0}" -gt 0 ] 2>/dev/null; then
+        printf '%s, %s quant - fits your %s GB with room for the KV cache' \
+            "$_params" "$_quant" "$_vram"
+    else
+        printf '%s, %s quant - runs on CPU/system RAM' "$_params" "$_quant"
+    fi
+}

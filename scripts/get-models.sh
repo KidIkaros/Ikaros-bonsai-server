@@ -338,7 +338,10 @@ case "$MODE" in
         step "Recommended for this machine"
         printf '  %s%s\n' "$C_DIM" "$_repo"
         printf '%s' "$C_RESET"
-        printf '  %s\n\n' "$_file"
+        printf '  %s\n' "$_file"
+        # Say WHY: param count + quant + VRAM fit, so the choice is legible.
+        dim "  $(model_reason "$_file" "${VRAM_GB:-0}")"
+        echo ""
         fetch "$_repo" "$_file"
         ;;
 
