@@ -31,12 +31,15 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)      DRY_RUN=1 ;;
         --make-default) MAKE_DEFAULT=1 ;;
-        --model)        MODEL="${2:-}"; shift ;;
-        --name)         PROV_NAME="${2:-}"; shift ;;
+        --model)        [ $# -ge 2 ] || die "--model needs a value."; MODEL="$2"; shift ;;
+        --name)         [ $# -ge 2 ] || die "--name needs a value.";  PROV_NAME="$2"; shift ;;
         -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)              die "Unknown option: $1" ;;
     esac
-    shift
+    # Guard the shift: when a value option is the LAST argument, the shift
+    # above already emptied "$@", and a bare `shift` on an empty list returns
+    # 1 - which under `set -e` aborts the script silently, with no error.
+    [ $# -gt 0 ] && shift || true
 done
 
 command -v hermes >/dev/null 2>&1 || die "The 'hermes' CLI is not on PATH. Install Hermes first."

@@ -1688,6 +1688,47 @@ else
     fail "kiln-dash.sh must parse" ""
 fi
 
+group "hermes-wire arg parsing"
+
+# hermes-wire.sh registers the local server as a Hermes provider. It had a
+# value-option loop where a value-taking flag as the LAST argument (--model
+# with no value) double-shifted, and the bare trailing `shift` on an empty "$@"
+# returned 1 - which under `set -e` aborted the script SILENTLY, no error, no
+# exit message. A user (or a wrapper script checking $?) got a mysterious
+# failure. These tests pin the clear-refusal contract using --dry-run so the
+# real Hermes config is never touched.
+# A value option with no value must refuse with a clear message, not die silent.
+_hw_err="$(./scripts/hermes-wire.sh --dry-run --model 2>&1 || true)"
+case "$_hw_err" in
+    *"needs a value"*) pass "--model with no value refuses clearly" ;;
+    *) fail "--model with no value must refuse with a message" "$_hw_err" ;;
+esac
+# And it must exit non-zero (a wrapper checking $? sees the failure).
+./scripts/hermes-wire.sh --dry-run --model >/dev/null 2>&1
+_hw_rc=$?
+if [ "$_hw_rc" -ne 0 ]; then
+    pass "--model with no value exits non-zero (rc=$_hw_rc)"
+else
+    fail "--model with no value must exit non-zero" "rc=$_hw_rc"
+fi
+# --name with no value behaves the same way.
+case "$(./scripts/hermes-wire.sh --dry-run --name 2>&1 || true)" in
+    *"needs a value"*) pass "--name with no value refuses clearly" ;;
+    *) fail "--name with no value must refuse with a message" "" ;;
+esac
+# A valid value option as the LAST argument still works (the fix must not
+# over-shift and eat a following good argument).
+_hw_ok="$(./scripts/hermes-wire.sh --dry-run --model good-model 2>&1 || true)"
+case "$_hw_ok" in
+    *"good-model"*) pass "a trailing --model value is accepted" ;;
+    *) fail "a trailing --model value must be accepted" "$_hw_ok" ;;
+esac
+# Dry run must never touch the config: it prints commands and says so.
+case "$_hw_ok" in
+    *"Nothing was changed"*) pass "dry run reports it changed nothing" ;;
+    *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
+esac
+
 group "env var back-compat (bonsai/ikaros -> kiln rename)"
 
 # The project was renamed twice: bonsai -> ikaros -> kiln. Every var is now
