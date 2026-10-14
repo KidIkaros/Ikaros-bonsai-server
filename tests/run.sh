@@ -1638,6 +1638,56 @@ case "$_help" in
     *) fail "kiln help must open with the Kiln wordmark" "$(printf '%s' "$_help" | head -1)" ;;
 esac
 
+group "dash (TUI)"
+
+# kiln dash is a pure-bash ANSI dashboard. On a TTY it owns the keyboard;
+# piped or NO_COLOR it must print one static snapshot with NO screen-control
+# escapes, so it stays safe in pipes and CI. These pin that contract.
+# Piped: no ESC bytes at all (colors off, no clear/home).
+_dash_piped="$(./scripts/kiln dash 2>&1)"
+case "$_dash_piped" in
+    *$'\033'*) fail "piped kiln dash must contain no ANSI escapes" "$_dash_piped" ;;
+    *)        pass "piped kiln dash carries no ANSI escapes" ;;
+esac
+# The snapshot still shows the brand and the status frame as plain text.
+case "$_dash_piped" in
+    *"local model server · fired hot"*) pass "the dash snapshot shows the wordmark tagline" ;;
+    *) fail "dash snapshot must show the Kiln tagline" "$_dash_piped" ;;
+esac
+case "$_dash_piped" in
+    *"server"*) pass "the dash snapshot shows the server frame" ;;
+    *) fail "dash snapshot must show the server frame" "$_dash_piped" ;;
+esac
+# It is routed through the dispatcher, so 'kiln dash' works, and it appears in
+# help and completions like any other command.
+case "$(./scripts/kiln help 2>&1)" in
+    *"kiln dash"*) pass "kiln help documents dash" ;;
+    *) fail "kiln help must document dash" "" ;;
+esac
+case "$(./scripts/kiln completions bash 2>&1)" in
+    *dash*) pass "completions include dash" ;;
+    *) fail "completions must include dash" "" ;;
+esac
+# The dispatcher's typo suggester is edit-distance based: a one-edit typo
+# suggests the command, a two-edit miss (like the transposition "dahs") falls
+# back to the honest plain pointer. Pin both halves of that contract.
+case "$(./scripts/kiln dass 2>&1)" in
+    *dash*) pass "a one-edit typo of dash suggests dash" ;;
+    *) fail "dass should suggest dash (one substitution)" "" ;;
+esac
+# A transposition is two edits, so it must NOT guess - the plain pointer is the
+# documented, honest behaviour.
+case "$(./scripts/kiln dahs 2>&1)" in
+    *"Did you mean"*) fail "a two-edit typo must not guess" "" ;;
+    *) pass "a two-edit typo of dash falls back to the plain pointer" ;;
+esac
+# dash parses under set -u (its own strict mode) without aborting.
+if bash -n scripts/kiln-dash.sh 2>/dev/null; then
+    pass "kiln-dash.sh parses"
+else
+    fail "kiln-dash.sh must parse" ""
+fi
+
 group "env var back-compat (bonsai/ikaros -> kiln rename)"
 
 # The project was renamed twice: bonsai -> ikaros -> kiln. Every var is now

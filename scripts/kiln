@@ -18,6 +18,7 @@
 #   ./scripts/kiln assess         what fits, and how the KV type changes it
 #   ./scripts/kiln coverage       which settings have been tried, and which have not
 #   ./scripts/kiln models         list installed models
+#   ./scripts/kiln dash           full-screen status dashboard (q to quit)
 #   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
 #
 # Settings live in .state/service.env. Editing it, or using `set`, is enough:
@@ -474,7 +475,13 @@ except Exception:
     help|--help|-h|"")
         kiln_logo
         echo
-        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+
+    dash)
+        # Full-screen dashboard. Pure bash + ANSI, no toolchain. On a TTY it
+        # owns the keyboard; piped it prints one static snapshot and exits.
+        exec "$SCRIPT_DIR/kiln-dash.sh"
         ;;
 
     completions)
@@ -482,7 +489,7 @@ except Exception:
         # cannot drift from the dispatcher: adding a command and forgetting
         # here is the failure mode this prevents.
         _shell="${1:-bash}"
-        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models help"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
         case "$_shell" in
             bash)
                 cat <<EOF
@@ -555,7 +562,7 @@ EOF
         # plain pointer is more honest.
         suggest_cmd() {
             local _cmd="$1" _c _diff _i
-            local _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models help"
+            local _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
             for _c in $_cmds; do
                 _diff="$(awk -v a="$_cmd" -v b="$_c" 'BEGIN {
                     la = length(a); lb = length(b)
