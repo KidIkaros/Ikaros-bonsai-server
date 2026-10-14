@@ -20,6 +20,7 @@
 #   ./scripts/kiln models         list installed models
 #   ./scripts/kiln up             one command: model + start + wire Hermes
 #   ./scripts/kiln preset <name>  apply a named recipe (fastest, balanced, low-vram, safe)
+#   ./scripts/kiln report [path]  write a shareable diagnostic bundle (no upload)
 #   ./scripts/kiln dash           full-screen status dashboard (q to quit)
 #   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
 #
@@ -570,7 +571,7 @@ except Exception:
     help|--help|-h|"")
         kiln_logo
         echo
-        sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
         ;;
 
     dash)
@@ -612,12 +613,47 @@ except Exception:
         fi
         ;;
 
+    report)
+        # Bundle everything needed to diagnose a failure on hardware we never
+        # see, into ONE file the user can send by hand. Optional positional path
+        # (default: STATE_DIR/kiln-report.txt). No network, no upload - Kiln
+        # makes no outbound calls. The bundle is safe to share: hardware,
+        # version, settings keys (never values), and the structured error log.
+        # A leading-dash arg is a typo, not a path - reject it like any flag.
+        case "${1:-}" in -*) usage_die "'kiln report' takes an optional output path, not flags" ;; esac
+        load_settings
+        _out="${1:-$STATE_DIR/kiln-report.txt}"
+        {
+            echo "# Kiln diagnostic report"
+            echo "# Generated $(date -u +%Y-%m-%dT%H:%M:%SZ). Safe to share: no prompts, model output, or secrets."
+            echo ""
+            echo "## Version"
+            grep -m1 'PRISM_RELEASE\|PRISM_COMMIT' "$STATE_DIR/detect.env" 2>/dev/null || echo "detect.env: not found"
+            echo "kiln: $(git -C "$SCRIPT_DIR/.." describe --tags --always 2>/dev/null || echo unknown)"
+            echo ""
+            echo "## Hardware"
+            grep -E "^(OS|ARCH|GPU_NAME|GPU_VENDOR|VRAM_GB|RAM_GB|AVX512|BACKEND)=" "$STATE_DIR/detect.env" 2>/dev/null || echo "detect.env: not found"
+            echo ""
+            echo "## Settings (keys only - values omitted)"
+            grep -vE '^#|^$' "$SETTINGS_FILE" 2>/dev/null | cut -d= -f1 || echo "(no settings file)"
+            echo ""
+            echo "## Recent errors (last 50)"
+            if [ -f "$ERROR_LOG" ]; then
+                tail -50 "$ERROR_LOG"
+            else
+                echo "(no errors logged)"
+            fi
+        } > "$_out" 2>/dev/null
+        info "Report written: $_out"
+        dim "  Send this file to whoever is helping. It contains no prompts, model output, or secrets."
+        ;;
+
     completions)
         # Shell completion for the 18 commands. Generated from one list so it
         # cannot drift from the dispatcher: adding a command and forgetting
         # here is the failure mode this prevents.
         _shell="${1:-bash}"
-        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset help"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset report help"
         case "$_shell" in
             bash)
                 cat <<EOF
@@ -687,7 +723,7 @@ EOF
         # longer than "speed", so a prefix test would miss the most common
         # typo shape. Uses the shared suggest_near/edit_distance so command
         # and flag suggestions behave identically.
-        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset help"
+        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset report help"
         if _near="$(suggest_near "$CMD" $_all_cmds)"; then
             usage_die "Unknown command '$CMD'. Did you mean '$_near'?
        All commands: ./scripts/kiln help"

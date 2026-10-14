@@ -176,6 +176,13 @@ kv_type_effective() {
 # reads it through EnvironmentFile, so changing a setting never means
 # reinstalling anything.
 SETTINGS_FILE="$STATE_DIR/service.env"
+# ERROR_LOG - append-only structured log of every error/warning/diagnostic, so
+# a failure on hardware we never see (a friend's machine) is captured locally
+# and can be shared. One JSON object per line (JSONL). Never uploaded - Kiln
+# makes no network calls; `kiln report` bundles it for the user to send by
+# hand. Privacy-first: no model output, no prompts, no paths beyond the model
+# filename, no env values.
+ERROR_LOG="$STATE_DIR/errors.log"
 
 # load_settings - apply the settings file. A value the caller set in the
 # environment wins over the file, so a one-off override still works.
@@ -358,10 +365,31 @@ fi
 # All diagnostics go to stderr, so stdout stays clean for machine-readable
 # output such as detect.sh --json.
 info() { printf "${C_OK}[OK]${C_RESET}   %s\n" "$*" >&2; }
-warn() { printf "${C_HOT}[WARN]${C_RESET} %s\n" "$*" >&2; }
-err()  { printf "${C_HOT}[ERR]${C_RESET}  %s\n" "$*" >&2; }
+warn() { err_log WARN "$*"; printf "${C_HOT}[WARN]${C_RESET} %s\n" "$*" >&2; }
+err()  { err_log ERROR "$*"; printf "${C_HOT}[ERR]${C_RESET}  %s\n" "$*" >&2; }
 step() { printf "\n${C_EMBER}==> %s${C_RESET}\n" "$*" >&2; }
 dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
+
+# err_log LEVEL MESSAGE - append one structured record to ERROR_LOG. JSONL so
+# it is trivially parseable. Best-effort and silent on any failure: this runs
+# on the error path, so a logger that cannot write must never mask or replace
+# the error it is recording (hence the trailing `|| true` and 2>/dev/null).
+# Records only the level, an ISO timestamp, the command, the backend, and the
+# message - never model output, prompts, credentials, or absolute paths.
+err_log() {
+    local _lvl="$1" _msg="$2" _ts _cmd
+    _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    _cmd="$(basename "${0:-kiln}" 2>/dev/null || echo kiln)"
+    # Minimal JSON escaping: backslash and double-quote are the only chars that
+    # break a JSON string; newlines collapse to spaces so one record stays one
+    # line.
+    _msg="${_msg//\\/\\\\}"
+    _msg="${_msg//\"/\\\"}"
+    _msg="${_msg//$'\n'/ }"
+    printf '{"ts":"%s","level":"%s","cmd":"%s","backend":"%s","msg":"%s"}\n' \
+        "$_ts" "$_lvl" "$_cmd" "${BACKEND:-unknown}" "$_msg" \
+        >> "$ERROR_LOG" 2>/dev/null || true
+}
 
 # kiln_logo - the wordmark, drawn in box characters so it needs no font and
 # degrades to plain text when color is off. The glyphs come from a verified

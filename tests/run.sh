@@ -1817,6 +1817,68 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "diagnostic error log + report"
+
+# Errors are captured to a structured local log so a failure on hardware we
+# never see (a friend's machine) can be diagnosed. Privacy-first: JSONL, no
+# upload, no prompts/output/secrets. `kiln report` bundles it for hand-sharing.
+# err_log writes valid JSONL and never fails its caller.
+_dl="$(mktemp -d)"
+_dout="$(KILN_STATE_DIR="$_dl" ERROR_LOG="$_dl/errors.log" bash -c '
+    . scripts/lib/common.sh 2>/dev/null
+    err "a plain failure"
+    err "with \"quotes\" and \\backslash"
+    echo "SURVIVED"
+' 2>/dev/null)"
+case "$_dout" in
+    *SURVIVED*) pass "err_log never fails its caller" ;;
+    *) fail "err_log must not break the error path" "$_dout" ;;
+esac
+# Every line is valid JSON.
+if python3 -c "import json,sys; [json.loads(l) for l in open('$_dl/errors.log')]" 2>/dev/null; then
+    pass "errors.log is valid JSONL"
+else
+    fail "errors.log must be valid JSONL" ""
+fi
+# Records carry level + message, and never the raw newline (one record, one line).
+if [ "$(wc -l < "$_dl/errors.log")" = "2" ] && grep -q '"level":"ERROR"' "$_dl/errors.log"; then
+    pass "each error is one structured line with a level"
+else
+    fail "errors must be one line each with a level" "$(cat "$_dl/errors.log")"
+fi
+rm -rf "$_dl"
+# A real CLI error lands in the log, and kiln report bundles it.
+_dr="$(mktemp -d)"; mkdir -p "$_dr/state"
+KILN_STATE_DIR="$_dr/state" KILN_MODELS_DIR="$_dr/models" ./scripts/kiln bogus-cmd >/dev/null 2>&1
+if [ -f "$_dr/state/errors.log" ] && grep -q "Unknown command" "$_dr/state/errors.log"; then
+    pass "a real CLI error is captured to errors.log"
+else
+    fail "a CLI error must be captured to errors.log" ""
+fi
+KILN_STATE_DIR="$_dr/state" KILN_MODELS_DIR="$_dr/models" \
+    ./scripts/kiln report "$_dr/report.txt" >/dev/null 2>&1
+if grep -q "Unknown command" "$_dr/report.txt" && grep -q "Safe to share" "$_dr/report.txt"; then
+    pass "kiln report bundles the error log"
+else
+    fail "kiln report must bundle the error log" ""
+fi
+# The report omits setting VALUES (keys only) - a settings file with a secret-ish
+# value must not leak it.
+printf 'KILN_PORT=8081\nKILN_HOST=127.0.0.1\n' > "$_dr/state/service.env"
+KILN_STATE_DIR="$_dr/state" KILN_MODELS_DIR="$_dr/models" \
+    ./scripts/kiln report "$_dr/report2.txt" >/dev/null 2>&1
+if grep -q "KILN_PORT" "$_dr/report2.txt" && ! grep -q "8081" "$_dr/report2.txt"; then
+    pass "report lists setting keys but not values"
+else
+    fail "report must omit setting values" "$(grep KILN "$_dr/report2.txt")"
+fi
+rm -rf "$_dr"
+# report is a documented command.
+case "$(./scripts/kiln help 2>&1)" in
+    *"kiln report"*) pass "kiln help documents report" ;;
+    *) fail "kiln help must document report" "" ;;
+esac
+
 group "cold start on a fresh home (unmeasured model)"
 
 # CRITICAL regression caught by pre-release dogfood: start-server.sh aborted
