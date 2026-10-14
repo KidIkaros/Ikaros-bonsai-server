@@ -108,6 +108,7 @@ case "$CMD" in
         ;;
 
     stop)
+        reject_any_flags stop "$@"
         load_settings
         if service_active; then
             systemctl --user stop "$UNIT_NAME"
@@ -118,6 +119,7 @@ case "$CMD" in
         ;;
 
     restart)
+        reject_any_flags restart "$@"
         load_settings
         if service_active || (unit_installed && have_systemd); then
             systemctl --user restart "$UNIT_NAME" 2>/dev/null || {
@@ -131,6 +133,7 @@ case "$CMD" in
         ;;
 
     status)
+        reject_any_flags status "$@"
         load_settings
         ensure_detect
         step "Status"
@@ -182,6 +185,7 @@ except Exception:
 
     logs)
         load_settings
+        reject_unknown_flags logs "-f" -- "$@"
         FOLLOW=""
         [ "${1:-}" = "-f" ] && FOLLOW="-f"
         if service_active; then
@@ -196,6 +200,7 @@ except Exception:
         ;;
 
     show)
+        reject_any_flags show "$@"
         load_settings
         step "Settings"
         if [ -f "$SETTINGS_FILE" ]; then
@@ -308,6 +313,7 @@ except Exception:
         # future skill to consume, without parsing the table. Same source, same
         # numbers - a JSON row and a table row can never disagree.
         _fast_json=0
+        reject_unknown_flags fastest "--json" -- "$@"
         for _a in "$@"; do
             [ "$_a" = "--json" ] && _fast_json=1
         done
@@ -460,6 +466,7 @@ except Exception:
     coverage) load_settings; exec "$SCRIPT_DIR/assess.sh" --coverage ;;
 
     models)
+        reject_any_flags models "$@"
         load_settings
         step "Installed models"
         _n=0
@@ -479,6 +486,7 @@ except Exception:
         ;;
 
     dash)
+        reject_any_flags dash "$@"
         # Full-screen dashboard. Pure bash + ANSI, no toolchain. On a TTY it
         # owns the keyboard; piped it prints one static snapshot and exits.
         exec "$SCRIPT_DIR/kiln-dash.sh"
@@ -557,38 +565,10 @@ EOF
         #
         # The match is edit-distance-based, not prefix-based: "speeed" is
         # longer than "speed", so a prefix test would miss the most common
-        # typo shape. Substitutions, one insertion and one deletion are all
-        # within one edit; beyond that "did you mean" becomes a guess and the
-        # plain pointer is more honest.
-        suggest_cmd() {
-            local _cmd="$1" _c _diff _i
-            local _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
-            for _c in $_cmds; do
-                _diff="$(awk -v a="$_cmd" -v b="$_c" 'BEGIN {
-                    la = length(a); lb = length(b)
-                    if (la > lb + 1 || lb > la + 1) { print 99; exit }
-                    # Equal length: count substitutions.
-                    if (la == lb) {
-                        d = 0
-                        for (i = 1; i <= la; i++)
-                            if (substr(a, i, 1) != substr(b, i, 1)) d++
-                        print d; exit
-                    }
-                    # One apart: one edit is enough iff every character of the
-                    # shorter appears in order in the longer (subsequence test).
-                    if (la < lb) { s = a; l = b } else { s = b; l = a }
-                    j = 1; skips = 0
-                    for (i = 1; i <= length(l); i++) {
-                        if (j <= length(s) && substr(l, i, 1) == substr(s, j, 1)) j++
-                        else skips++
-                    }
-                    print skips
-                }')"
-                [ "$_diff" -le 1 ] && { printf '%s' "$_c"; return 0; }
-            done
-            return 1
-        }
-        if _near="$(suggest_cmd "$CMD")"; then
+        # typo shape. Uses the shared suggest_near/edit_distance so command
+        # and flag suggestions behave identically.
+        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
+        if _near="$(suggest_near "$CMD" $_all_cmds)"; then
             usage_die "Unknown command '$CMD'. Did you mean '$_near'?
        All commands: ./scripts/kiln help"
         fi

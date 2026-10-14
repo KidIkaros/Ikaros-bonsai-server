@@ -385,6 +385,92 @@ die() { err "$*"; exit 1; }
 usage_die() { err "$*"; exit 2; }
 
 # ---------------------------------------------------------------------------
+# Argument validation (shared by the dispatcher and every subcommand)
+# ---------------------------------------------------------------------------
+
+# edit_distance A B - print the edit distance between A and B, capped at 99.
+# Substitutions, one insertion and one deletion all count as 1; anything more
+# than 1 prints a number > 1 so callers can treat "> 1" as "not a typo". This is
+# the single distance function the command and flag suggesters both use, so a
+# "did you mean" behaves identically at both layers.
+edit_distance() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        la = length(a); lb = length(b)
+        if (la > lb + 1 || lb > la + 1) { print 99; exit }
+        if (la == lb) {
+            d = 0
+            for (i = 1; i <= la; i++)
+                if (substr(a, i, 1) != substr(b, i, 1)) d++
+            print d; exit
+        }
+        # One apart: one edit is enough iff every character of the shorter
+        # appears in order in the longer (subsequence test).
+        if (la < lb) { s = a; l = b } else { s = b; l = a }
+        j = 1; skips = 0
+        for (i = 1; i <= length(l); i++) {
+            if (j <= length(s) && substr(l, i, 1) == substr(s, j, 1)) j++
+            else skips++
+        }
+        print skips
+    }'
+}
+
+# suggest_near WORD CANDIDATES... - print the first candidate within edit
+# distance 1 of WORD, or return 1. Shared by command and flag suggestion.
+suggest_near() {
+    local _word="$1"; shift
+    local _c _d
+    for _c in "$@"; do
+        _d="$(edit_distance "$_word" "$_c")"
+        [ "$_d" -le 1 ] && { printf '%s' "$_c"; return 0; }
+    done
+    return 1
+}
+
+# reject_any_flags CONTEXT - usage_die (exit 2) if ANY argument is a flag.
+# For subcommands that take no flags at all (status, show, models, ...): a
+# stray flag is always a mistake, and there is nothing to suggest it toward.
+# Separate from reject_unknown_flags because that one needs an allowed list to
+# match against; here the allowed set is empty, so any "-..." is unknown.
+reject_any_flags() {
+    local _ctx="$1"; shift
+    local _a
+    for _a in "$@"; do
+        case "$_a" in
+            -*) usage_die "'kiln $_ctx' takes no flags, got '$_a'. Try: ./scripts/kiln help" ;;
+        esac
+    done
+}
+
+# reject_unknown_flags CONTEXT ALLOWED_STR -- ARGS... - usage_die (exit 2) if
+# any of ARGS is a flag not in ALLOWED_STR (a space-separated list). The `--`
+# separates the fixed allowed set from the user's arguments, so the two can
+# never be confused (an earlier single-stream form let a user's bad flag land
+# in the allowed list and pass itself). This is the missing balancing loop:
+# without it a subcommand silently accepts and ignores a mistyped flag
+# (`kiln start --backgroud` runs as if absent) - the worst failure for a new
+# user, because it looks like it worked. A did-you-mean from the shared
+# distance function catches a flag typo exactly like a command typo.
+reject_unknown_flags() {
+    local _ctx="$1" _allowed="$2"; shift 2
+    [ "${1:-}" = "--" ] && shift
+    local _a _near
+    for _a in "$@"; do
+        case "$_a" in
+            -*) ;;
+            *) continue ;;
+        esac
+        # Already-allowed flags pass through untouched.
+        case " $_allowed " in *" $_a "*) continue ;; esac
+        # shellcheck disable=SC2086
+        if _near="$(suggest_near "$_a" $_allowed)"; then
+            usage_die "Unknown flag '$_a' for 'kiln $_ctx'. Did you mean '$_near'?"
+        fi
+        usage_die "Unknown flag '$_a' for 'kiln $_ctx'. Try: ./scripts/kiln help"
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Input
 # ---------------------------------------------------------------------------
 

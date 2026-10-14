@@ -1792,6 +1792,51 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "flag validation (reject unknown flags)"
+
+# Subcommands used to silently accept and ignore unknown flags (kiln status
+# --nonsense exited 0 and ran). The missing balancing loop: a mistyped flag now
+# exits 2 (usage), with a did-you-mean when it is a near-miss of a real flag.
+# These pin the contract. Fake state dir so nothing touches real config.
+_fv() { local d; d="$(mktemp -d)"; KILN_STATE_DIR="$d" ./scripts/kiln "$@" >/dev/null 2>&1; local rc=$?; rm -rf "$d"; echo "$rc"; }
+
+# No-flag subcommands reject any flag with exit 2.
+assert_eq "status rejects an unknown flag" "2" "$(_fv status --nonsense)"
+assert_eq "models rejects an unknown flag" "2" "$(_fv models --bad)"
+assert_eq "show rejects an unknown flag" "2" "$(_fv show --bad)"
+assert_eq "stop rejects an unknown flag" "2" "$(_fv stop --x)"
+assert_eq "dash rejects an unknown flag" "2" "$(_fv dash --y)"
+# Subcommands with real flags: an unknown one exits 2 ...
+assert_eq "logs rejects an unknown flag" "2" "$(_fv logs --folow)"
+assert_eq "fastest rejects an unknown flag" "2" "$(_fv fastest --bogus)"
+# ... but the legit flag still passes (exit 0, not 2).
+assert_eq "logs -f is still accepted" "0" "$(_fv logs -f)"
+assert_eq "fastest --json is still accepted" "0" "$(_fv fastest --json)"
+# A near-miss flag gets a did-you-mean; a far miss gets the plain pointer.
+_d="$(mktemp -d)"
+_fv_msg="$(KILN_STATE_DIR="$_d" ./scripts/kiln fastest --jso 2>&1)"
+case "$_fv_msg" in
+    *"Did you mean '--json'"*) pass "a near-miss flag suggests the real one" ;;
+    *) fail "fastest --jso should suggest --json" "$_fv_msg" ;;
+esac
+# A far miss does NOT guess (honest plain pointer), same rule as commands.
+_fv_msg2="$(KILN_STATE_DIR="$_d" ./scripts/kiln logs --folow 2>&1)"
+case "$_fv_msg2" in
+    *"Did you mean"*) fail "a far-miss flag must not guess" "$_fv_msg2" ;;
+    *) pass "a far-miss flag falls back to the plain pointer" ;;
+esac
+rm -rf "$_d"
+# The shared distance function is exercised by both command and flag typos, so
+# the command-layer behaviour is unchanged after the refactor.
+assert_eq "command typo still suggests (unchanged)" "2" "$(_fv statuss)"
+_cd="$(mktemp -d)"
+_cmsg="$(KILN_STATE_DIR="$_cd" ./scripts/kiln statuss 2>&1)"
+case "$_cmsg" in
+    *"Did you mean 'status'"*) pass "command did-you-mean still works after refactor" ;;
+    *) fail "command suggestion regressed" "$_cmsg" ;;
+esac
+rm -rf "$_cd"
+
 group "env var back-compat (bonsai/ikaros -> kiln rename)"
 
 # The project was renamed twice: bonsai -> ikaros -> kiln. Every var is now
