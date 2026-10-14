@@ -362,12 +362,6 @@ err()  { printf "${C_HOT}[ERR]${C_RESET}  %s\n" "$*" >&2; }
 step() { printf "\n${C_EMBER}==> %s${C_RESET}\n" "$*" >&2; }
 dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
 
-# ember WORD [REST...] - print WORD in the Ember accent and the rest in Ash.
-# Used for the one highlighted value in a line (a tok/s number, a model name)
-# without coloring the whole line, mirroring the brand kit's "one accent"
-# rule. Emits to stderr like the other helpers.
-ember() { printf "${C_EMBER}%s${C_RESET}${C_ASH} %s${C_RESET}\n" "$1" "${*:2}" >&2; }
-
 # kiln_logo - the wordmark, drawn in box characters so it needs no font and
 # degrades to plain text when color is off. The glyphs come from a verified
 # 5-wide block font (K's diagonal, I's serifs, L's foot, N's diagonal are each

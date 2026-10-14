@@ -7,8 +7,8 @@
 # commands, so it is a view over kiln, not a parallel implementation.
 #
 # Layout: a branded header, a live status block, the measured-speed ranking,
-# and a key legend. Keys: q quit, s start, x stop, r restart, b bench,
-# f fastest (re-rank), l logs. Colors follow the Kiln palette and fall back
+# and a key legend. Keys: q quit, s start, x stop, r restart, l logs.
+# Colors follow the Kiln palette and fall back
 # to plain text when stdout is not a TTY or NO_COLOR is set - in that case
 # dash prints one static snapshot and exits, so it is safe in pipes and CI.
 
@@ -31,8 +31,6 @@ cursor_show() { printf '\033[?25h'; }
 # clear_screen / home - full repaint each frame.
 clear_screen() { printf '\033[2J'; }
 home() { printf '\033[H'; }
-# clear_to_eol - erase the rest of the line before drawing.
-clear_to_eol() { printf '\033[K'; }
 
 # hr WIDTH [CHAR] - a horizontal rule of WIDTH, default a thin line.
 hr() { local w="$1" c="${2:-─}" i out=""; for ((i=0;i<w;i++)); do out+="$c"; done; printf '%s' "$out"; }
@@ -123,7 +121,7 @@ draw_ranked() {
 draw_keys() {
     local w; w="$(term_w)"
     printf "\n"
-    printf "  ${C_ASH}[s]${C_RESET} start  ${C_ASH}[x]${C_RESET} stop  ${C_ASH}[r]${C_RESET} restart  ${C_ASH}[b]${C_RESET} bench  ${C_ASH}[l]${C_RESET} logs  ${C_ASH}[q]${C_RESET} quit\n"
+    printf "  ${C_ASH}[s]${C_RESET} start  ${C_ASH}[x]${C_RESET} stop  ${C_ASH}[r]${C_RESET} restart  ${C_ASH}[l]${C_RESET} logs  ${C_ASH}[q]${C_RESET} quit\n"
     printf "${C_ASH}%s${C_RESET}\n" "$(hr "$w" '─')"
 }
 
@@ -159,7 +157,6 @@ while :; do
         x|X) "$SCRIPT_DIR/kiln" stop  >/dev/null 2>&1 & ;;
         r|R) "$SCRIPT_DIR/kiln" restart >/dev/null 2>&1 & ;;
         l|L) clear_screen; home; "$SCRIPT_DIR/kiln" logs -n 40 2>&1 | head -"$(( $(term_h) - 3 ))"; printf "\n${C_ASH}press any key…${C_RESET}"; IFS= read -rsn1 _ 2>/dev/null ;;
-        b|B) : ;;  # bench runs in the foreground terminal, not the dashboard
         *)   : ;;  # any other key: just redraw (refresh)
     esac
     draw
