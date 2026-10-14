@@ -49,6 +49,25 @@ unit_installed() {
     [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT_NAME" ]
 }
 
+# settings_write VAR VAL - persist one setting to service.env, replacing any
+# prior value. The single write path for both `set` and `preset`, so they can
+# never drift on the file format.
+settings_write() {
+    local _var="$1" _val="$2" _tmp
+    _tmp="$SETTINGS_FILE.tmp"
+    if [ -f "$SETTINGS_FILE" ]; then
+        grep -v "^$_var=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
+    else
+        {
+            printf '# Settings for the Kiln local model server.\n'
+            printf '# Edit a value and restart: ./scripts/kiln restart\n'
+            printf '\n'
+        } > "$_tmp"
+    fi
+    printf '%s=%s\n' "$_var" "$_val" >> "$_tmp"
+    mv "$_tmp" "$SETTINGS_FILE"
+}
+
 service_active() {
     have_systemd && unit_installed &&
         systemctl --user is-active "$UNIT_NAME" >/dev/null 2>&1
@@ -277,18 +296,7 @@ except Exception:
         esac
 
         mkdir -p "$STATE_DIR"
-        _tmp="$SETTINGS_FILE.tmp"
-        if [ -f "$SETTINGS_FILE" ]; then
-            grep -v "^$VAR=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
-        else
-            {
-                printf '# Settings for the Kiln local model server.\n'
-                printf '# Edit a value and restart: ./scripts/kiln restart\n'
-                printf '\n'
-            } > "$_tmp"
-        fi
-        printf '%s=%s\n' "$VAR" "$VAL" >> "$_tmp"
-        mv "$_tmp" "$SETTINGS_FILE"
+        settings_write "$VAR" "$VAL"
 
         info "$VAR=$VAL"
         if service_active; then
@@ -330,20 +338,12 @@ Try: ./scripts/kiln preset" ; }
         step "Applying preset: $_preset"
         dim "  $_p_why"
         mkdir -p "$STATE_DIR"
-        _tmp="$SETTINGS_FILE.tmp"
-        [ -f "$SETTINGS_FILE" ] && cp "$SETTINGS_FILE" "$_tmp" || : > "$_tmp"
-        # Drop any key this preset sets, then re-add the preset's values, so a
-        # preset fully owns its knobs rather than leaving a stale older value.
+        # settings_write replaces any prior value, so a preset fully owns its
+        # knobs (no stale older value) with one call per key.
         for _kv in $_p_set; do
-            _k="${_kv%%=*}"
-            grep -v "^$_k=" "$_tmp" > "$_tmp.2" 2>/dev/null || : > "$_tmp.2"
-            mv "$_tmp.2" "$_tmp"
-        done
-        for _kv in $_p_set; do
-            printf '%s\n' "$_kv" >> "$_tmp"
+            settings_write "${_kv%%=*}" "${_kv#*=}"
             info "$_kv"
         done
-        mv "$_tmp" "$SETTINGS_FILE"
         if service_active; then
             dim "  Restart to apply: ./scripts/kiln restart"
         fi

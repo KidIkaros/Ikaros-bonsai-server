@@ -339,34 +339,26 @@ esac
 # ---------------------------------------------------------------------------
 # Memory safety check (a balancing loop, not a quality cut)
 # ---------------------------------------------------------------------------
-# Router mode loads whatever is in the models dir. Before we launch, estimate
-# whether the largest model plus its KV cache fits the memory this machine
-# actually has, and WARN with the numbers if it does not - naming the next size
-# down. This never blocks the start (the user may know better, or want to try
-# anyway) and never changes quality settings; it only surfaces a risk the user
-# would otherwise discover as an OOM-kill or a silent fallback to CPU.
-#
-# Sizing: weights are the file size; KV cache is roughly ctx * kv_bytes. We
-# compare the total against VRAM when offloading to GPU (NGL > 0), else RAM.
-_check_mem_model="$(ls -S "$MODELS_DIR"/*.gguf 2>/dev/null | head -1)"
-if [ -n "$_check_mem_model" ]; then
-    _check_bytes="$(stat -c '%s' "$_check_mem_model" 2>/dev/null || stat -f '%z' "$_check_mem_model" 2>/dev/null || echo 0)"
-    _check_gb="$(awk -v b="$_check_bytes" 'BEGIN{printf "%.1f", b/1073741824}')"
-    # KV cache estimate: ctx tokens * ~0.5 MB at 64K q8_0 is already covered by
-    # the "room for KV cache" headroom below; keep the estimate coarse and
-    # clearly labelled as an estimate.
-    _kv_gb="$(awk -v c="$KILN_CTX" 'BEGIN{printf "%.1f", c*0.000008}')"  # ~8 KB/token q8_0
-    _need_gb="$(awk -v w="$_check_gb" -v k="$_kv_gb" 'BEGIN{printf "%.1f", w+k}')"
-    if [ "${KILN_NGL:-0}" -gt 0 ] 2>/dev/null && [ "${VRAM_GB:-0}" -gt 0 ] 2>/dev/null; then
-        _have="$VRAM_GB"; _kind="VRAM"
-    else
-        _have="${RAM_GB:-0}"; _kind="RAM"
-    fi
-    if [ "${_have:-0}" -gt 0 ] 2>/dev/null && \
-       awk -v n="$_need_gb" -v h="$_have" 'BEGIN{exit !(n > h)}'; then
-        warn "Memory: $(basename "$_check_mem_model") needs ~${_need_gb} GB (weights + KV) but this machine has ${_have} GB ${_kind}."
-        dim "  It may run slower (partial offload) or fail to load. A smaller quant fits better:"
-        dim "  ./scripts/get-models.sh --recommend"
+# Warn before launch when the largest model plus its KV cache will not fit the
+# memory budget. Reuses the existing cost model (kv_budget_gb for the budget
+# with headroom, model_size_bytes, kv_mib when the model is measured) rather
+# than re-deriving sizes here. Never blocks the start and never changes
+# settings - it only surfaces a risk the user would otherwise hit as an
+# OOM-kill or a silent CPU fallback. When the model is unmeasured there is no
+# honest number, so it stays silent (kv_type_auto already warns on that).
+_mem_largest="$(find "$MODELS_DIR" -name '*.gguf' -not -name '*mmproj*' \
+    -not -name '*kv-mean-center-*' -not -name '*dspark*' 2>/dev/null |
+    while IFS= read -r _f; do printf '%s\t%s\n' "$(model_size_bytes "$_f")" "$_f"; done |
+    sort -rn | head -1 | cut -f2)"
+if [ -n "$_mem_largest" ] && _mem_budget="$(kv_budget_gb 2>/dev/null)"; then
+    _mem_w="$(awk -v b="$(model_size_bytes "$_mem_largest")" 'BEGIN{printf "%.2f", b/1073741824}')"
+    _mem_kv="$(kv_mib "$_mem_largest" "$KILN_CTX" "${KILN_KV_TYPE:-q8_0}" 2>/dev/null |
+        awk '{printf "%.2f", $1/1024}')"
+    _mem_kv="${_mem_kv:-0}"
+    if awk -v w="$_mem_w" -v k="$_mem_kv" -v b="$_mem_budget" 'BEGIN{exit !(w+k > b)}'; then
+        _mem_kind="VRAM"; [ "${BACKEND:-cpu}" = "cpu" ] && _mem_kind="RAM"
+        warn "Memory: $(basename "$_mem_largest") needs ~$(awk -v w="$_mem_w" -v k="$_mem_kv" 'BEGIN{printf "%.1f", w+k}') GB but the budget is ${_mem_budget} GB ${_mem_kind}."
+        dim "  A smaller quant fits better: ./scripts/get-models.sh --recommend"
     fi
 fi
 
