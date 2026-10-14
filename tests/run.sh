@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/run.sh - dependency-free test suite for Kiln Bonsai server.
+# tests/run.sh - dependency-free test suite for Kiln.
 #
 # Covers backend/asset selection against fixture hardware profiles, catalog
 # integrity, quant-format gating, and helper correctness. Runs with plain bash:

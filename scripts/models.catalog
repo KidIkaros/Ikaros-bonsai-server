@@ -1,4 +1,4 @@
-# Kiln Bonsai model catalog
+# Kiln model catalog
 #
 # Fields (pipe separated):
 #   repo | file | size_gb | min_vram_gb | min_ram_gb | tags
