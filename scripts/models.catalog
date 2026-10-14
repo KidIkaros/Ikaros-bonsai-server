@@ -1,11 +1,11 @@
-# Ikaros Bonsai model catalog
+# Kiln Bonsai model catalog
 #
 # Fields (pipe separated):
 #   repo | file | size_gb | min_vram_gb | min_ram_gb | tags
 #
 # size_gb is the on-disk size. min_vram_gb / min_ram_gb are guidance for
 # comfortable inference at the default 65536 context AND the default q8_0 KV
-# cache type, not hard limits. Raising IKAROS_CTX or setting IKAROS_KV_TYPE=f16
+# cache type, not hard limits. Raising KILN_CTX or setting KILN_KV_TYPE=f16
 # increases these substantially; see docs/HARDWARE.md.
 #
 # Tags are free-form and used for filtering and for the hardware-based

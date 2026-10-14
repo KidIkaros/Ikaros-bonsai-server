@@ -15,7 +15,7 @@
 #
 # Overrides:
 #   BACKEND=cpu|vulkan|cuda|rocm   force a backend
-#   IKAROS_MODELS_DIR=/path        where models are stored
+#   KILN_MODELS_DIR=/path        where models are stored
 
 set -euo pipefail
 
@@ -38,7 +38,7 @@ for arg in "$@"; do
 done
 
 printf '\n'
-printf '  %s\n' "Ikaros setup"
+printf '  %s\n' "Kiln setup"
 printf '  %s\n' "------------"
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ printf '    %s./scripts/hermes-wire.sh --dry-run%s   # see what it would change\
 printf '    %s./scripts/hermes-wire.sh%s             # apply it\n\n' "$C_CYAN" "$C_RESET"
 printf '  Optional: run it as a user service (installed disabled, start it yourself)\n'
 printf '    %s./scripts/install-service.sh%s\n\n' "$C_CYAN" "$C_RESET"
-printf '  Web UI and OpenAI-compatible API: %shttp://localhost:%s%s\n' "$C_CYAN" "$IKAROS_PORT" "$C_RESET"
+printf '  Web UI and OpenAI-compatible API: %shttp://localhost:%s%s\n' "$C_CYAN" "$KILN_PORT" "$C_RESET"
 echo ""
 dim "  Docs: README.md, docs/MODELS.md, docs/HARDWARE.md, docs/HERMES.md"
 echo ""

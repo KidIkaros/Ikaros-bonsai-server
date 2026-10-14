@@ -14,7 +14,7 @@
 # Overrides:
 #   BACKEND=cuda|rocm|vulkan|cpu     force a backend
 #   ROCM_PATH=/opt/rocm-7.2.0        force a ROCm prefix
-#   IKAROS_FAKE_*                    test hooks, see tests/fixtures/
+#   KILN_FAKE_*                    test hooks, see tests/fixtures/
 
 set -euo pipefail
 
@@ -39,12 +39,12 @@ BACKEND_OVERRIDE="${BACKEND:-}"
 # Test hooks - every probe reads through these so fixtures can drive it.
 # ---------------------------------------------------------------------------
 
-_uname_s() { printf '%s' "${IKAROS_FAKE_UNAME_S:-$(uname -s)}"; }
-_uname_m() { printf '%s' "${IKAROS_FAKE_UNAME_M:-$(uname -m)}"; }
+_uname_s() { printf '%s' "${KILN_FAKE_UNAME_S:-$(uname -s)}"; }
+_uname_m() { printf '%s' "${KILN_FAKE_UNAME_M:-$(uname -m)}"; }
 
 _cpuinfo() {
-    if [ -n "${IKAROS_FAKE_CPUINFO+set}" ]; then
-        [ -n "$IKAROS_FAKE_CPUINFO" ] && cat "$IKAROS_FAKE_CPUINFO"
+    if [ -n "${KILN_FAKE_CPUINFO+set}" ]; then
+        [ -n "$KILN_FAKE_CPUINFO" ] && cat "$KILN_FAKE_CPUINFO"
     elif [ -r /proc/cpuinfo ]; then
         cat /proc/cpuinfo
     fi
@@ -52,8 +52,8 @@ _cpuinfo() {
 }
 
 _lspci() {
-    if [ -n "${IKAROS_FAKE_LSPCI+set}" ]; then
-        [ -n "$IKAROS_FAKE_LSPCI" ] && cat "$IKAROS_FAKE_LSPCI"
+    if [ -n "${KILN_FAKE_LSPCI+set}" ]; then
+        [ -n "$KILN_FAKE_LSPCI" ] && cat "$KILN_FAKE_LSPCI"
     elif command -v lspci >/dev/null 2>&1; then
         lspci 2>/dev/null
     fi
@@ -62,9 +62,9 @@ _lspci() {
 
 _nvidia_smi_version() {
     # A set-but-empty value means "pretend nvidia-smi is absent".
-    if [ -n "${IKAROS_FAKE_NVIDIA_SMI+set}" ]; then
-        [ -n "$IKAROS_FAKE_NVIDIA_SMI" ] &&
-            sed -n 's/.*CUDA[ A-Z]*Version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' "$IKAROS_FAKE_NVIDIA_SMI"
+    if [ -n "${KILN_FAKE_NVIDIA_SMI+set}" ]; then
+        [ -n "$KILN_FAKE_NVIDIA_SMI" ] &&
+            sed -n 's/.*CUDA[ A-Z]*Version:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' "$KILN_FAKE_NVIDIA_SMI"
         return 0
     fi
     command -v nvidia-smi >/dev/null 2>&1 || return 0
@@ -77,7 +77,7 @@ _nvcc_version() {
 }
 
 _vram_bytes() {
-    if [ -n "${IKAROS_FAKE_VRAM_BYTES:-}" ]; then printf '%s' "$IKAROS_FAKE_VRAM_BYTES"; return 0; fi
+    if [ -n "${KILN_FAKE_VRAM_BYTES:-}" ]; then printf '%s' "$KILN_FAKE_VRAM_BYTES"; return 0; fi
     _v="$(cat /sys/class/drm/card*/device/mem_info_vram_total 2>/dev/null | head -1 || true)"
     if [ -n "$_v" ]; then printf '%s' "$_v"; return 0; fi
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -88,7 +88,7 @@ _vram_bytes() {
 }
 
 _ram_bytes() {
-    if [ -n "${IKAROS_FAKE_RAM_KB:-}" ]; then printf '%s' "$(( IKAROS_FAKE_RAM_KB * 1024 ))"; return 0; fi
+    if [ -n "${KILN_FAKE_RAM_KB:-}" ]; then printf '%s' "$(( KILN_FAKE_RAM_KB * 1024 ))"; return 0; fi
     _kb="$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null | head -1 || true)"
     if [ -n "$_kb" ]; then printf '%s' "$(( _kb * 1024 ))" ; else printf '0'; fi
 }
@@ -96,7 +96,7 @@ _ram_bytes() {
 # Discover a ROCm installation prefix.
 _rocm_prefix() {
     # A set-but-empty value means "pretend no ROCm is installed".
-    if [ -n "${IKAROS_FAKE_ROCM_PREFIX+set}" ]; then printf '%s' "$IKAROS_FAKE_ROCM_PREFIX"; return 0; fi
+    if [ -n "${KILN_FAKE_ROCM_PREFIX+set}" ]; then printf '%s' "$KILN_FAKE_ROCM_PREFIX"; return 0; fi
     if [ -n "${ROCM_PATH:-}" ] && [ -d "$ROCM_PATH" ]; then printf '%s' "$ROCM_PATH"; return 0; fi
     # Collect /opt/rocm-* then order newest version first, so a system with
     # several ROCm installs prefers the most recent one.
@@ -120,7 +120,7 @@ _rocm_prefix() {
 _rocm_version() {
     _p="$1"
     [ -n "$_p" ] || { printf ''; return 0; }
-    if [ -n "${IKAROS_FAKE_ROCM_VERSION+set}" ]; then printf '%s' "$IKAROS_FAKE_ROCM_VERSION"; return 0; fi
+    if [ -n "${KILN_FAKE_ROCM_VERSION+set}" ]; then printf '%s' "$KILN_FAKE_ROCM_VERSION"; return 0; fi
     if [ -r "$_p/.info/version" ]; then
         sed -n 's/^\([0-9][0-9.]*\).*/\1/p' "$_p/.info/version" | head -1 || true
         return 0
@@ -134,7 +134,7 @@ _rocm_version() {
 
 # Ask ROCm which gfx target the installed card reports.
 _rocm_gfx() {
-    if [ -n "${IKAROS_FAKE_ROCM_GFX+set}" ]; then printf '%s' "$IKAROS_FAKE_ROCM_GFX"; return 0; fi
+    if [ -n "${KILN_FAKE_ROCM_GFX+set}" ]; then printf '%s' "$KILN_FAKE_ROCM_GFX"; return 0; fi
     _p="$1"
     [ -n "$_p" ] || { printf ''; return 0; }
     for _e in "$_p/bin/rocm_agent_enumerator" "$_p/libexec/rocm_agent_enumerator"; do
@@ -147,8 +147,8 @@ _rocm_gfx() {
 }
 
 _has_vulkan() {
-    if [ -n "${IKAROS_FAKE_VULKAN:-}" ]; then
-        [ "$IKAROS_FAKE_VULKAN" = "1" ]
+    if [ -n "${KILN_FAKE_VULKAN:-}" ]; then
+        [ "$KILN_FAKE_VULKAN" = "1" ]
         return
     fi
     command -v vulkaninfo >/dev/null 2>&1 || return 1

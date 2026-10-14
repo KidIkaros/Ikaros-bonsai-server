@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# install.sh - put the `ikaros` command on this machine's PATH.
+# install.sh - put the `kiln` command on this machine's PATH.
 #
-# Like `pip install` for the project: after this, `ikaros` works from any
+# Like `pip install` for the project: after this, `kiln` works from any
 # directory, in any shell, without cloning or exporting anything.
 #
 # What it does:
 #   1. picks an install prefix (~/.local by default, or --prefix)
 #   2. copies the scripts there, so no absolute paths are baked in
-#   3. symlinks `ikaros` into the prefix's bin/ (which it adds to PATH
+#   3. symlinks `kiln` into the prefix's bin/ (which it adds to PATH
 #      guidance if needed)
 #
 # The install is self-contained: it does not reference the repo it was run
@@ -15,7 +15,7 @@
 #
 # Usage:
 #   ./install.sh                 install to ~/.local
-#   ./install.sh --prefix /opt/ikaros
+#   ./install.sh --prefix /opt/kiln
 #   ./install.sh --uninstall     remove a previous install
 #   ./install.sh --status        show what is installed and where
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PREFIX="${IKAROS_PREFIX:-$HOME/.local}"
+PREFIX="${KILN_PREFIX:-$HOME/.local}"
 UNINSTALL=0
 STATUS=0
 
@@ -40,9 +40,9 @@ done
 
 # The prefix's bin/ must exist for the symlink target to be valid.
 BIN_DIR="$PREFIX/bin"
-LIB_DIR="$PREFIX/lib/ikaros"
+LIB_DIR="$PREFIX/lib/kiln"
 STATE_DIR="$PREFIX/state"
-LINK="$BIN_DIR/ikaros"
+LINK="$BIN_DIR/kiln"
 MARKER="$LIB_DIR/.installed-from"
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ if [ "$UNINSTALL" = 1 ]; then
     # empty so a reinstall does not silently drop a user's measurements.
     rmdir "$STATE_DIR" 2>/dev/null || true
     echo "Removed $LINK and $LIB_DIR"
-    echo "Models in ~/models/ikaros-server were left in place."
+    echo "Models in ~/models/kiln-server were left in place."
     exit 0
 fi
 
@@ -81,7 +81,7 @@ fi
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$STATE_DIR"
 
 # Copy, don't symlink, the script tree: the repo may move or be deleted, and
-# a broken symlink in bin/ is worse than a stale copy. `ikaros` itself is a
+# a broken symlink in bin/ is worse than a stale copy. `kiln` itself is a
 # thin entry that sources the copied lib, so the copy is what runs.
 cp -R "$SELF_DIR/scripts/." "$LIB_DIR/"
 chmod +x "$LIB_DIR"/*.sh
@@ -92,10 +92,10 @@ chmod +x "$LIB_DIR"/*.sh
 # downloaded models survive a repo update.
 cat > "$LINK" <<EOF
 #!/usr/bin/env bash
-# Installed by ikaros install.sh. Regenerate with --uninstall then install.
-export IKAROS_STATE_DIR="\${IKAROS_STATE_DIR:-$STATE_DIR}"
-export IKAROS_MODELS_DIR="\${IKAROS_MODELS_DIR:-\$HOME/models/ikaros-server}"
-exec "$LIB_DIR/ikaros" "\$@"
+# Installed by kiln install.sh. Regenerate with --uninstall then install.
+export KILN_STATE_DIR="\${KILN_STATE_DIR:-$STATE_DIR}"
+export KILN_MODELS_DIR="\${KILN_MODELS_DIR:-\$HOME/models/kiln-server}"
+exec "$LIB_DIR/kiln" "\$@"
 EOF
 chmod +x "$LINK"
 
@@ -104,7 +104,7 @@ printf '%s\n' "$SELF_DIR" > "$MARKER"
 # Shell completion, installed when the shell's completion directory is
 # discoverable. Silently skipped otherwise: a missing completion dir is not a
 # failed install, and the command is always available via
-# `ikaros completions <shell>` for anyone who wants to place it by hand.
+# `kiln completions <shell>` for anyone who wants to place it by hand.
 _completion_dir=""
 case "${SHELL:-}" in
     */zsh)
@@ -118,7 +118,7 @@ case "${SHELL:-}" in
         ;;
 esac
 
-echo "Installed ikaros to $PREFIX"
+echo "Installed kiln to $PREFIX"
 echo "  command : $LINK"
 echo "  scripts : $LIB_DIR"
 echo "  state   : $STATE_DIR"
@@ -131,9 +131,9 @@ if [ -n "$_completion_dir" ] && mkdir -p "$_completion_dir" 2>/dev/null; then
     # command (no extension); zsh expects _<cmd> on the fpath; fish expects
     # <cmd>.fish. Writing the wrong name means the file is never loaded.
     case "$_shell" in
-        bash) _comp_name="ikaros" ;;
+        bash) _comp_name="kiln" ;;
         zsh)  _comp_name="_bonsai" ;;
-        fish) _comp_name="ikaros.fish" ;;
+        fish) _comp_name="kiln.fish" ;;
     esac
     if "$LINK" completions "$_shell" > "$_completion_dir/$_comp_name" 2>/dev/null &&
        [ -s "$_completion_dir/$_comp_name" ]; then
@@ -145,18 +145,18 @@ if [ -n "$_completion_dir" ] && mkdir -p "$_completion_dir" 2>/dev/null; then
         esac
     else
         echo "Tab completion skipped (could not write $_completion_dir)."
-        echo "  Install it by hand: ikaros completions $_shell"
+        echo "  Install it by hand: kiln completions $_shell"
     fi
 else
     echo "Tab completion not installed (no writable completion dir found)."
-    echo "  Install it by hand: ikaros completions <bash|zsh|fish>"
+    echo "  Install it by hand: kiln completions <bash|zsh|fish>"
 fi
 echo ""
 
 # PATH guidance: only warn when the prefix's bin is genuinely absent from it.
 case ":$PATH:" in
     *":$BIN_DIR:"*)
-        echo "ikaros is on your PATH. Try: ikaros status"
+        echo "kiln is on your PATH. Try: kiln status"
         ;;
     *)
         echo "NOTE: $BIN_DIR is not on your PATH. Add it with:"
@@ -167,4 +167,4 @@ case ":$PATH:" in
         ;;
 esac
 echo ""
-echo "First run: ikaros detect   (then: ikaros start)"
+echo "First run: kiln detect   (then: kiln start)"

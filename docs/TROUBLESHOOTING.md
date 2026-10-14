@@ -3,17 +3,17 @@
 Start with the one command that reports on everything:
 
 ```bash
-./scripts/ikaros status        # running? which port? what is loaded? which backend?
+./scripts/kiln status        # running? which port? what is loaded? which backend?
 ```
 
 It distinguishes "this repo's server is running" from "something else owns the port",
-which is the usual source of confusion. `./scripts/ikaros logs -f` follows the log.
+which is the usual source of confusion. `./scripts/kiln logs -f` follows the log.
 
 For a lower-level look:
 
 ```bash
 ./scripts/detect.sh --json     # what it thinks the hardware is
-./scripts/ikaros show          # the effective settings
+./scripts/kiln show          # the effective settings
 ```
 
 `detect.sh` writes everything to `.state/detect.env`, which every other script reads.
@@ -78,7 +78,7 @@ Something is already listening. Find out what, then either stop it or use anothe
 
 ```bash
 ./scripts/stop-server.sh --status
-IKAROS_PORT=9000 ./scripts/start-server.sh
+KILN_PORT=9000 ./scripts/start-server.sh
 ```
 
 ### `No .gguf files in <models dir>`
@@ -122,10 +122,10 @@ grep -E "allocating|failed to allocate" .state/server.log | tail -3
 
 `failed to allocate buffer for kv cache` means exactly that. Options, best first:
 
-1. **Use the default.** `IKAROS_KV_TYPE` already defaults to `q8_0`, which is 1.88x
+1. **Use the default.** `KILN_KV_TYPE` already defaults to `q8_0`, which is 1.88x
    smaller. If you have it set to `f16`, unset it.
-2. **Push further:** `IKAROS_KV_TYPE=iq4_nl` is 3.56x smaller. Expect some quality loss.
-3. **Shrink the context:** `IKAROS_CTX=32768`. Only if you are not using Hermes, which
+2. **Push further:** `KILN_KV_TYPE=iq4_nl` is 3.56x smaller. Expect some quality loss.
+3. **Shrink the context:** `KILN_CTX=32768`. Only if you are not using Hermes, which
    needs 64000 or more.
 4. **Use a smaller model:** the 8B at `q8_0` needs ~7 GB, the 1.7B ~5 GB.
 
@@ -139,7 +139,7 @@ The value is not one this build accepts. The error prints the allowed list:
 f32 f16 bf16 q8_0 q4_0 q4_1 iq4_nl q5_0 q5_1
 ```
 
-Note that `--kv-type` sets both K and V; `IKAROS_KV_TYPE_K` / `IKAROS_KV_TYPE_V` or
+Note that `--kv-type` sets both K and V; `KILN_KV_TYPE_K` / `KILN_KV_TYPE_V` or
 `--kv-type-k` / `--kv-type-v` override one half.
 
 ### Output quality dropped after changing the KV type
@@ -148,7 +148,7 @@ Expected with `q4_0`. `q8_0` is treated as near-lossless; `q4_0` is not, particu
 long contexts and reasoning-heavy prompts. Either go back to `q8_0`:
 
 ```bash
-IKAROS_KV_TYPE=q8_0 ./scripts/start-server.sh
+KILN_KV_TYPE=q8_0 ./scripts/start-server.sh
 ```
 
 or try `iq4_nl`, which is usually better than `q4_0` at the same size, or add
@@ -182,7 +182,7 @@ Two common causes:
 Also lower the context if you are calling the API directly rather than through Hermes:
 
 ```bash
-IKAROS_CTX=16384 ./scripts/start-server.sh
+KILN_CTX=16384 ./scripts/start-server.sh
 ```
 
 ---
@@ -213,7 +213,7 @@ matches something in `curl -s localhost:8081/v1/models` exactly.
 
 ### Context window error from Hermes
 
-Hermes needs at least 64000 tokens. The default is 65536. If you lowered `IKAROS_CTX`,
+Hermes needs at least 64000 tokens. The default is 65536. If you lowered `KILN_CTX`,
 raise it back.
 
 ### Restore the config
@@ -232,9 +232,9 @@ Correct behaviour. The installer deliberately does not enable or start it. A mod
 server holds VRAM for as long as it runs, so starting it is your decision:
 
 ```bash
-./scripts/ikaros start
-./scripts/ikaros status
-./scripts/ikaros logs
+./scripts/kiln start
+./scripts/kiln status
+./scripts/kiln logs
 ```
 
 ### A setting did not take effect
@@ -242,18 +242,18 @@ server holds VRAM for as long as it runs, so starting it is your decision:
 Settings live in `.state/service.env`. Check what is actually in effect:
 
 ```bash
-./scripts/ikaros show
+./scripts/kiln show
 ```
 
 A value exported in your shell wins over the file, so
-`IKAROS_CTX=8192 ./scripts/ikaros status` reports 8192 even if the file says otherwise.
+`KILN_CTX=8192 ./scripts/kiln status` reports 8192 even if the file says otherwise.
 If you changed the file, the running server still has the old value until you restart:
-`./scripts/ikaros restart`.
+`./scripts/kiln restart`.
 
 ### It will not start at boot
 
 ```bash
-systemctl --user enable ikaros
+systemctl --user enable kiln
 ```
 
 Also check lingering is on if you want user services to run without an active login:

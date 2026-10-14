@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$SCRIPT_DIR/lib/common.sh"
 
-CONTEXT="$IKAROS_CTX"
+CONTEXT="$KILN_CTX"
 KV_TYPE="$(kv_type_effective)"
 [ "$KV_TYPE" = "f16" ] && KV_TYPE="q8_0"
 DO_MEASURE=0
@@ -122,14 +122,14 @@ mapfile -t MODELS < <(find "$MODELS_DIR" -name '*.gguf' \
 # measure_kv MODEL - load briefly and record the f16 bytes per cell.
 measure_kv() {
     _model="$1"
-    _port=$((IKAROS_PORT + 200))
+    _port=$((KILN_PORT + 200))
     _log="$STATE_DIR/assess-measure.log"
 
     # A tiny context keeps this cheap: the cache is linear in cells, so 512
     # cells give the per-cell cost to full precision.
     "$SERVER_BIN" -m "$_model" --port "$_port" --ctx-size 512 \
         --cache-type-k f16 --cache-type-v f16 \
-        --n-gpu-layers "$IKAROS_NGL" --no-warmup -lv 4 >"$_log" 2>&1 &
+        --n-gpu-layers "$KILN_NGL" --no-warmup -lv 4 >"$_log" 2>&1 &
     _pid=$!
 
     _mib=""
@@ -239,8 +239,8 @@ explain_bench_failure() {
     if grep -qa "out of memory\|failed to allocate" "$1" 2>/dev/null; then
         dim "  Not enough free memory for this configuration."
         if grep -qa "kv cache" "$1" 2>/dev/null; then
-            dim "  The KV cache is what did not fit. A smaller IKAROS_CTX or a"
-            dim "  smaller IKAROS_KV_TYPE will free room."
+            dim "  The KV cache is what did not fit. A smaller KILN_CTX or a"
+            dim "  smaller KILN_KV_TYPE will free room."
         fi
     else
         dim "  See $1"
@@ -250,10 +250,10 @@ explain_bench_failure() {
 # measure_speed MODEL CONTEXT KV - run a short generation and record tok/s.
 measure_speed() {
     _model="$1" _ctx="$2" _kv="$3"
-    BENCH_PORT=$((IKAROS_PORT + 201))
+    BENCH_PORT=$((KILN_PORT + 201))
     BENCH_LOG="$STATE_DIR/assess-speed.log"
 
-    _tps="$(bench_tps "$_model" "$IKAROS_NGL" "$_ctx" "$_kv" 128 || true)"
+    _tps="$(bench_tps "$_model" "$KILN_NGL" "$_ctx" "$_kv" 128 || true)"
     _acc="${BENCH_ACCEPTANCE:-}"
 
     if [ -z "$_tps" ]; then
@@ -261,10 +261,10 @@ measure_speed() {
         # Distinguish "not enough memory right now" from a real failure. The
         # assessment models total capacity; a benchmark needs free capacity.
         if grep -qa "out of memory\|failed to allocate" "$BENCH_LOG" 2>/dev/null; then
-            _other="$(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null | head -1 || true)"
+            _other="$(lsof -ti "tcp:$KILN_PORT" 2>/dev/null | head -1 || true)"
             if [ -n "$_other" ]; then
                 dim "  Not enough free memory. Something else is holding it, on port"
-                dim "  $IKAROS_PORT (pid $_other). Stop it and re-run, or benchmark a"
+                dim "  $KILN_PORT (pid $_other). Stop it and re-run, or benchmark a"
                 dim "  smaller context: ./scripts/assess.sh --measure --speed --context 32768"
             else
                 dim "  Not enough free memory for this model at $_ctx context."
@@ -274,7 +274,7 @@ measure_speed() {
         fi
         return 1
     fi
-    speed_set "$_model" "$_ctx" "$_kv" "$_tps" "$BACKEND" "$PRISM_RELEASE" "$IKAROS_NGL" "$_acc"
+    speed_set "$_model" "$_ctx" "$_kv" "$_tps" "$BACKEND" "$PRISM_RELEASE" "$KILN_NGL" "$_acc"
     coverage_set backend "${BACKEND:-unknown}"
     coverage_set kv "$_kv"
     info "measured $(basename "$_model") at $_ctx/$_kv: ${_tps} tok/s${_acc:+ (draft acceptance $_acc)}"
@@ -411,9 +411,9 @@ if [ "$TUNE" = 1 ]; then
         if awk -v f="$_free" 'BEGIN { exit !(f < 8) }'; then
             warn "Less than 8 GB of VRAM is free, so these numbers may not reproduce."
             dim "  Another process is holding memory. Stop it first for a clean run:"
-            _other="$(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null | head -1 || true)"
-            [ -n "$_other" ] && dim "    something is on port $IKAROS_PORT (pid $_other)"
-            dim "    ./scripts/ikaros stop   if this repo's server is the one running"
+            _other="$(lsof -ti "tcp:$KILN_PORT" 2>/dev/null | head -1 || true)"
+            [ -n "$_other" ] && dim "    something is on port $KILN_PORT (pid $_other)"
+            dim "    ./scripts/kiln stop   if this repo's server is the one running"
         fi
     fi
 
@@ -423,7 +423,7 @@ if [ "$TUNE" = 1 ]; then
 
     # label | kv type | extra server args | env to reproduce | ngl (optional)
     run_variant() {
-        _label="$1" _kv="$2" _extra="$3" _env="$4" _ngl="${5:-${IKAROS_NGL}}"
+        _label="$1" _kv="$2" _extra="$3" _env="$4" _ngl="${5:-${KILN_NGL}}"
 
         # A cache that does not fit is not a candidate, so check before loading.
         _kvmib="$(kv_mib "$TUNE_PATH" "$CONTEXT" "$_kv" || true)"
@@ -435,7 +435,7 @@ if [ "$TUNE" = 1 ]; then
             fi
         fi
 
-        BENCH_PORT=$((IKAROS_PORT + 203))
+        BENCH_PORT=$((KILN_PORT + 203))
         BENCH_LOG="$STATE_DIR/assess-tune.log"
         # One server start, three generations against it, median taken. A
         # single run is easily depressed by anything else touching the GPU,
@@ -479,7 +479,7 @@ if [ "$TUNE" = 1 ]; then
     # largest split that fits this machine, and that split is recorded in the env
     # string so the winner is safe to apply on this hardware, not just the one it
     # was measured on.
-    _TUNE_NGL="$IKAROS_NGL"
+    _TUNE_NGL="$KILN_NGL"
     _ENV_SUFFIX=""
     if [ "$BACKEND" != "cpu" ]; then
         _TUNE_NLAYER="$(kv_layers_get "$TUNE_PATH" || true)"
@@ -490,20 +490,20 @@ if [ "$TUNE" = 1 ]; then
                 _TUNE_NGL="$_TUNE_MAX_FIT"
                 dim "  Full offload does not fit ($_TUNE_NLAYER layers); baseline capped at $_TUNE_MAX_FIT."
             fi
-            _ENV_SUFFIX=" IKAROS_NGL=$_TUNE_NGL"
+            _ENV_SUFFIX=" KILN_NGL=$_TUNE_NGL"
         fi
     fi
 
     run_variant "q8_0 KV, ubatch 512 (default)" "q8_0" "--ubatch-size 512" \
-        "IKAROS_KV_TYPE=q8_0$_ENV_SUFFIX" "$_TUNE_NGL"
+        "KILN_KV_TYPE=q8_0$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q4_0 KV, ubatch 512" "q4_0" "--ubatch-size 512" \
-        "IKAROS_KV_TYPE=q4_0$_ENV_SUFFIX" "$_TUNE_NGL"
+        "KILN_KV_TYPE=q4_0$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "f16 KV, ubatch 512" "f16" "--ubatch-size 512" \
-        "IKAROS_KV_TYPE=f16$_ENV_SUFFIX" "$_TUNE_NGL"
+        "KILN_KV_TYPE=f16$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q8_0 KV, ubatch 256" "q8_0" "--ubatch-size 256" \
-        "IKAROS_KV_TYPE=q8_0 IKAROS_EXTRA_ARGS=\"--ubatch-size 256\"$_ENV_SUFFIX" "$_TUNE_NGL"
+        "KILN_KV_TYPE=q8_0 KILN_EXTRA_ARGS=\"--ubatch-size 256\"$_ENV_SUFFIX" "$_TUNE_NGL"
     run_variant "q8_0 KV, ubatch 1024" "q8_0" "--ubatch-size 1024" \
-        "IKAROS_KV_TYPE=q8_0 IKAROS_EXTRA_ARGS=\"--ubatch-size 1024\"$_ENV_SUFFIX" "$_TUNE_NGL"
+        "KILN_KV_TYPE=q8_0 KILN_EXTRA_ARGS=\"--ubatch-size 1024\"$_ENV_SUFFIX" "$_TUNE_NGL"
 
     # An MTP model carries its own draft head. The best window depends on the
     # backend: on Vulkan n-max 2 measured fastest, on ROCm n-max 1 did, so both
@@ -512,10 +512,10 @@ if [ "$TUNE" = 1 ]; then
         *mtp*)
             run_variant "draft-mtp n-max 1" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 1" \
-                "IKAROS_SPEC_TYPE=draft-mtp IKAROS_SPEC_DRAFT_N_MAX=1$_ENV_SUFFIX" "$_TUNE_NGL"
+                "KILN_SPEC_TYPE=draft-mtp KILN_SPEC_DRAFT_N_MAX=1$_ENV_SUFFIX" "$_TUNE_NGL"
             run_variant "draft-mtp n-max 2" "$KV_TYPE" \
                 "--ubatch-size 512 --spec-type draft-mtp --spec-draft-n-max 2" \
-                "IKAROS_SPEC_TYPE=draft-mtp IKAROS_SPEC_DRAFT_N_MAX=2$_ENV_SUFFIX" "$_TUNE_NGL"
+                "KILN_SPEC_TYPE=draft-mtp KILN_SPEC_DRAFT_N_MAX=2$_ENV_SUFFIX" "$_TUNE_NGL"
             ;;
     esac
 
@@ -540,12 +540,12 @@ if [ "$TUNE" = 1 ]; then
     _benv="$(printf '%s' "$_best" | cut -f4)"
     _bacc="$(printf '%s' "$_best" | cut -f5)"
 
-    # Persist the measured winner so `ikaros apply` can project it onto the
+    # Persist the measured winner so `kiln apply` can project it onto the
     # settings file. apply_tune_best keeps the machine-level knobs (NGL,
     # ubatch) and drops only the backend-specific spec on a cross-backend apply.
     if [ -n "$_benv" ]; then
         write_tune_best "$_benv" "$BACKEND"
-        dim "  Winner recorded to $TUNE_BEST_FILE (run ./scripts/ikaros apply to persist it)."
+        dim "  Winner recorded to $TUNE_BEST_FILE (run ./scripts/kiln apply to persist it)."
     fi
 
     printf '  %-38s %8s %9s %10s  %s\n' "fastest first" "tok/s" "vs now" "draft" "verdict"
@@ -592,8 +592,8 @@ if [ "$TUNE" = 1 ]; then
             # it live. Without them a fresh tune ended in a silently-recorded
             # file, and the user re-ran the server with the old settings.
             info "Make it the server's setting:"
-            dim "    ./scripts/ikaros apply     # write the winner to .state/service.env"
-            dim "    ./scripts/ikaros restart   # restart with it"
+            dim "    ./scripts/kiln apply     # write the winner to .state/service.env"
+            dim "    ./scripts/kiln restart   # restart with it"
             echo ""
             info "Or serve it once, without saving:"
             dim "    $_benv ./scripts/start-server.sh"
@@ -654,13 +654,13 @@ run_identity() {
         return 0
     fi
 
-    local _p1=$((IKAROS_PORT + 211)) _p2=$((IKAROS_PORT + 212))
+    local _p1=$((KILN_PORT + 211)) _p2=$((KILN_PORT + 212))
     local _l1="$STATE_DIR/identity-off.log" _l2="$STATE_DIR/identity-on.log"
 
     dim "  Reference run (no drafts)..."
     "$SERVER_BIN" -m "$_id_model" --port "$_p1" --ctx-size "$_id_ctx" \
         --cache-type-k "$_id_kv" --cache-type-v "$_id_kv" \
-        --n-gpu-layers "$IKAROS_NGL" --no-warmup --jinja >"$_l1" 2>&1 &
+        --n-gpu-layers "$KILN_NGL" --no-warmup --jinja >"$_l1" 2>&1 &
     local _r1=$!
     for _ in $(seq 1 120); do
         curl -sf --max-time 5 "http://127.0.0.1:$_p1/health" >/dev/null 2>&1 && break
@@ -674,7 +674,7 @@ run_identity() {
     dim "  Draft run (draft-mtp, n-max $_id_nmax)..."
     "$SERVER_BIN" -m "$_id_model" --port "$_p2" --ctx-size "$_id_ctx" \
         --cache-type-k "$_id_kv" --cache-type-v "$_id_kv" \
-        --n-gpu-layers "$IKAROS_NGL" --no-warmup --jinja \
+        --n-gpu-layers "$KILN_NGL" --no-warmup --jinja \
         --spec-type draft-mtp --spec-draft-n-max "$_id_nmax" >"$_l2" 2>&1 &
     local _r2=$!
     for _ in $(seq 1 120); do
@@ -796,9 +796,9 @@ if [ "$SWEEP" = 1 ]; then
     dim "  ${SWEEP_TOKENS} tokens per measurement, $(printf '%s' "$LEVELS" | wc -w | tr -d ' ') configurations."
     echo ""
 
-    _other="$(lsof -ti "tcp:$IKAROS_PORT" 2>/dev/null | head -1 || true)"
+    _other="$(lsof -ti "tcp:$KILN_PORT" 2>/dev/null | head -1 || true)"
     if [ -n "$_other" ]; then
-        warn "Something is on port $IKAROS_PORT (pid $_other); it may hold memory."
+        warn "Something is on port $KILN_PORT (pid $_other); it may hold memory."
         dim "  Benchmarks need free memory. Stop it for a clean sweep."
     fi
 
@@ -809,7 +809,7 @@ if [ "$SWEEP" = 1 ]; then
     BEST_NGL=""
     BEST_TPS=""
     for _ngl in $LEVELS; do
-        BENCH_PORT=$((IKAROS_PORT + 202))
+        BENCH_PORT=$((KILN_PORT + 202))
         BENCH_LOG="$STATE_DIR/assess-sweep-$_ngl.log"
 
         read -r _vram _ram <<<"$(kv_placement "$N_LAYER" "$_ngl" "$W_GB" "$KV_GB")"
@@ -855,7 +855,7 @@ if [ "$SWEEP" = 1 ]; then
         fi
         echo ""
         dim "  Serve it with:"
-        dim "    IKAROS_NGL=$BEST_NGL ./scripts/start-server.sh"
+        dim "    KILN_NGL=$BEST_NGL ./scripts/start-server.sh"
     else
         warn "No configuration produced a measurement."
         dim "  Something is holding memory, or the model is too large for this machine."

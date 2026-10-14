@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
 MAKE_DEFAULT=0
 MODEL=""
-PROV_NAME="Bonsai (local)"
+PROV_NAME="Kiln (local)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,8 +41,8 @@ done
 
 command -v hermes >/dev/null 2>&1 || die "The 'hermes' CLI is not on PATH. Install Hermes first."
 
-PROVIDER="local-127.0.0.1:$IKAROS_PORT"
-BASE_URL="http://127.0.0.1:$IKAROS_PORT"
+PROVIDER="local-127.0.0.1:$KILN_PORT"
+BASE_URL="http://127.0.0.1:$KILN_PORT"
 
 # Hermes parses config keys on dots, and this provider id contains dots. Each
 # dot in the id must be backslash-escaped or `hermes config set` refuses it.
@@ -53,7 +53,7 @@ PROVIDER_KEY="$(printf '%s' "$PROVIDER" | sed 's/\./\\./g')"
 # ---------------------------------------------------------------------------
 
 if [ -z "$MODEL" ]; then
-    step "Looking for a running server on port $IKAROS_PORT"
+    step "Looking for a running server on port $KILN_PORT"
     _resp=""
     if command -v curl >/dev/null 2>&1; then
         _resp="$(curl -sf --max-time 5 "$BASE_URL/v1/models" 2>/dev/null || true)"
