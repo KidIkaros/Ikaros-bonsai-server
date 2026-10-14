@@ -122,3 +122,11 @@ fi
 
 info "Installed to $DEST"
 dim "  server: $SERVER_BIN"
+echo ""
+# The binary is one of two prerequisites, and it is the smaller one. Without
+# a forward-pointer a first-time user finishes a 180 MB download believing
+# they are done, then hits "No .gguf files" with no idea a second, larger
+# download is coming.
+info "Next: download a model, then start the server:"
+dim "  ./scripts/get-models.sh --recommend   # the best fit for this machine"
+dim "  ./scripts/start-server.sh"

@@ -29,7 +29,7 @@ Useful flags:
 |---|---|
 | `--dry-run` | print what would change, touch nothing |
 | `--model <id>` | skip the prompt, use this model id |
-| `--name "..."` | display name for the provider (default `Bonsai (local)`) |
+| `--name "..."` | display name for the provider (default `Kiln (local)`) |
 | `--make-default` | also set `model.provider` and `model.default` |
 
 ## Doing it by hand
@@ -94,7 +94,7 @@ curl -s http://localhost:8081/v1/chat/completions \
 ## Context window
 
 Hermes requires at least 64000 tokens of context. The server defaults to 65536, which
-is why `start-server.sh` warns if you set `BONSAI_CTX` below that. Bonsai 2 supports up
+is why `start-server.sh` warns if you set `KILN_CTX` below that. Bonsai 2 supports up
 to 262144, but every extra token of context costs VRAM.
 
 ## Model aliases

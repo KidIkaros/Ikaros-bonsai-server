@@ -16,8 +16,8 @@
 #   ./scripts/make-kv-bias.sh --force          redo an existing bias file
 #
 # Then serve it:
-#   BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
-#   BONSAI_EXTRA_ARGS="--kv-mean-center <bias file>" ./scripts/start-server.sh
+#   KILN_KV_TYPE_K=q4_0 KILN_KV_TYPE_V=q8_0 \
+#   KILN_EXTRA_ARGS="--kv-mean-center <bias file>" ./scripts/start-server.sh
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODEL=""
 FORCE=0
-TOKENS="${BONSAI_CALIB_TOKENS:-400}"
+TOKENS="${KILN_CALIB_TOKENS:-400}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -77,7 +77,7 @@ fi
 [ -f "$MODEL" ] || die "Model not found: $MODEL"
 
 STEM="$(basename "${MODEL%.gguf}")"
-BIAS="${BONSAI_KV_BIAS_OUT:-$MODELS_DIR/kv-mean-center-$STEM.gguf}"
+BIAS="${KILN_KV_BIAS_OUT:-$MODELS_DIR/kv-mean-center-$STEM.gguf}"
 CORPUS="$STATE_DIR/calib-corpus-$STEM.txt"
 
 if [ -f "$BIAS" ] && [ "$FORCE" = 0 ]; then
@@ -126,10 +126,10 @@ else
     step "Generating a calibration corpus from the model"
     dim "  This starts a temporary server and asks the model ${#SEEDS[@]} questions."
 
-    _port=$((BONSAI_PORT + 100))
+    _port=$((KILN_PORT + 100))
     _log="$STATE_DIR/calib-server.log"
     "$SERVER_BIN" -m "$MODEL" --port "$_port" --ctx-size 4096 \
-        --n-gpu-layers "$BONSAI_NGL" --no-warmup --jinja >"$_log" 2>&1 &
+        --n-gpu-layers "$KILN_NGL" --no-warmup --jinja >"$_log" 2>&1 &
     _srv_pid=$!
     trap 'kill "$_srv_pid" 2>/dev/null || true' EXIT
 
@@ -184,7 +184,7 @@ step "Computing the bias (this is quick)"
 
 # -ctk q4_0 is not optional: it makes the calibration run use the same rotated
 # basis that inference will use, and the loader rejects a mismatch.
-"$CALIB_BIN" -m "$MODEL" -f "$CORPUS" -o "$BIAS" -ctk q4_0 -ngl "$BONSAI_NGL"
+"$CALIB_BIN" -m "$MODEL" -f "$CORPUS" -o "$BIAS" -ctk q4_0 -ngl "$KILN_NGL"
 
 [ -f "$BIAS" ] || die "Calibration finished but $BIAS was not written."
 
@@ -192,8 +192,8 @@ step "Done"
 info "Bias file: $BIAS  ($(human_size "$(stat -c '%s' "$BIAS")"))"
 echo ""
 printf '  Serve it with a q4_0 K cache (2.46x smaller than f16, best measured quality):\n\n'
-printf '    %sBONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \\%s\n' "$C_CYAN" "$C_RESET"
-printf '    %sBONSAI_EXTRA_ARGS="--kv-mean-center %s" \\%s\n' "$C_CYAN" "$BIAS" "$C_RESET"
+printf '    %sKILN_KV_TYPE_K=q4_0 KILN_KV_TYPE_V=q8_0 \\%s\n' "$C_CYAN" "$C_RESET"
+printf '    %sKILN_EXTRA_ARGS="--kv-mean-center %s" \\%s\n' "$C_CYAN" "$BIAS" "$C_RESET"
 printf '    %s./scripts/start-server.sh%s\n\n' "$C_CYAN" "$C_RESET"
 dim "  The bias is only valid for this model and this K cache type."
 dim "  Rebuild it if you change the model or the K cache type."

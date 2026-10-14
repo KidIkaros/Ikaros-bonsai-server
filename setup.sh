@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh - get a local Bonsai model server running on this machine.
+# setup.sh - get a local Kiln model server running on this machine.
 #
 # Does four things:
 #   1. works out what hardware this is and which backend fits
@@ -15,7 +15,7 @@
 #
 # Overrides:
 #   BACKEND=cpu|vulkan|cuda|rocm   force a backend
-#   BONSAI_MODELS_DIR=/path        where models are stored
+#   KILN_MODELS_DIR=/path        where models are stored
 
 set -euo pipefail
 
@@ -38,8 +38,8 @@ for arg in "$@"; do
 done
 
 printf '\n'
-printf '  %s\n' "Ikaros Bonsai server setup"
-printf '  %s\n' "--------------------------"
+printf '  %s\n' "Kiln setup"
+printf '  %s\n' "------------"
 
 # ---------------------------------------------------------------------------
 # 1. Hardware
@@ -79,7 +79,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. What next
+# 4. Teach the local Hermes agent (best-effort, never fatal)
+# ---------------------------------------------------------------------------
+# Same shared script install.sh uses, so both install routes lay down the
+# identical skill from one implementation. Silent unless it succeeds.
+KILN_SKILL_VERBOSE=1 "$SCRIPT_DIR/scripts/install-hermes-skill.sh" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 5. Finish the job: start the server and register it with Hermes
+# ---------------------------------------------------------------------------
+# Onboarding should END in a working stack, not a list of manual steps. When a
+# model is present, start the server and register it as a Hermes provider (the
+# user still picks it in `hermes model` - we never force it active). Skipped
+# under --no-models (nothing to serve) and --detect-only (report and stop).
+_do_launch=1
+[ "$SKIP_MODELS" = 1 ] && _do_launch=0
+[ "$DETECT_ONLY" = 1 ] && _do_launch=0
+
+if [ "$_do_launch" = 1 ]; then
+    _gguf_count="$(find "${KILN_MODELS_DIR:-$HOME/models/kiln-server}" -name '*.gguf' 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$_gguf_count" -gt 0 ]; then
+        step "Starting the server"
+        if "$SCRIPT_DIR/scripts/start-server.sh" --background --no-browser >/dev/null 2>&1; then
+            info "Server is up on http://localhost:$KILN_PORT"
+            if command -v hermes >/dev/null 2>&1; then
+                "$SCRIPT_DIR/scripts/hermes-wire.sh" >/dev/null 2>&1 || true
+                info "Registered with Hermes."
+            fi
+        else
+            warn "Server did not start cleanly. Start it with: ./scripts/start-server.sh"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. What next
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -87,14 +121,19 @@ printf '  %s\n' "=============================================="
 printf '  %s\n' "  Ready"
 printf '  %s\n' "=============================================="
 echo ""
-printf '  Start the server (leave this running):\n'
-printf '    %s./scripts/start-server.sh%s\n\n' "$C_CYAN" "$C_RESET"
-printf '  Then, in another terminal, point Hermes at it:\n'
-printf '    %s./scripts/hermes-wire.sh --dry-run%s   # see what it would change\n' "$C_CYAN" "$C_RESET"
-printf '    %s./scripts/hermes-wire.sh%s             # apply it\n\n' "$C_CYAN" "$C_RESET"
+if [ "$_do_launch" = 1 ] && [ "${_gguf_count:-0}" -gt 0 ]; then
+    printf '  Kiln is live. Use it in Hermes:\n'
+    printf '    %shermes model%s   -> pick the Kiln provider\n\n' "$C_CYAN" "$C_RESET"
+    printf '  Or any time later, one command brings it all back up:\n'
+    printf '    %skiln up%s\n\n' "$C_CYAN" "$C_RESET"
+else
+    printf '  Start the server when ready:\n'
+    printf '    %skiln up%s   (model + start + wire Hermes, one command)\n\n' "$C_CYAN" "$C_RESET"
+fi
 printf '  Optional: run it as a user service (installed disabled, start it yourself)\n'
 printf '    %s./scripts/install-service.sh%s\n\n' "$C_CYAN" "$C_RESET"
-printf '  Web UI and OpenAI-compatible API: %shttp://localhost:%s%s\n' "$C_CYAN" "$BONSAI_PORT" "$C_RESET"
+printf '  Manage it: %skiln status%s  %skiln stop%s  %skiln dash%s\n' "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET"
+printf '  Web UI and OpenAI-compatible API: %shttp://localhost:%s%s\n' "$C_CYAN" "$KILN_PORT" "$C_RESET"
 echo ""
 dim "  Docs: README.md, docs/MODELS.md, docs/HARDWARE.md, docs/HERMES.md"
 echo ""

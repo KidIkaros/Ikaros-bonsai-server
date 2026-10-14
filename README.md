@@ -1,4 +1,4 @@
-# Ikaros Bonsai server
+# Kiln — a local model server for Hermes and any OpenAI-compatible client.
 
 A local model server for [Hermes](https://hermes.ai) and any other OpenAI-compatible
 client, running PrismML's [Bonsai](https://huggingface.co/collections/prism-ml) models
@@ -23,21 +23,30 @@ matching prebuilt binary, and pulls a model that fits. Then:
 
 ### Or install it as a command
 
-If you would rather not keep a clone around, `install.sh` puts a `bonsai` command on
-your `PATH` (no root needed). After that, `bonsai` works from any directory, in any
+If you would rather not keep a clone around, `install.sh` puts a `kiln` command on
+your `PATH` (no root needed). After that, `kiln` works from any directory, in any
 shell:
 
 ```bash
 ./install.sh                  # installs to ~/.local
-bonsai detect                 # what hardware was found, which backend
-bonsai start                  # first run downloads the binary + a model
-bonsai status
+kiln detect                 # what hardware was found, which backend
+kiln start                  # first run downloads the binary + a model
+kiln status
 ```
 
-`./install.sh --prefix /opt/bonsai` installs elsewhere, `--status` shows what is
+`./install.sh --prefix /opt/kiln` installs elsewhere, `--status` shows what is
 installed, `--uninstall` removes it. Re-run `install.sh` from a newer checkout to
 update. Release tarballs (`.tar.gz` + checksum) are built automatically on every
 `v*` tag; extract one and run its `install.sh` to install without cloning.
+
+Tab completion is installed alongside the command when your shell's completion
+directory is writable (bash, zsh and fish). To place it by hand:
+
+```bash
+kiln completions bash > ~/.local/share/bash-completion/completions/kiln
+kiln completions zsh  > ~/.zfunc/_bonsai     # then: autoload -U compinit && compinit
+kiln completions fish > ~/.config/fish/completions/kiln.fish
+```
 
 
 ---
@@ -71,8 +80,10 @@ downloading PrismML's official prebuilt binaries.
 
 - Linux x86_64 or arm64 (Windows is not supported yet)
 - `curl` or `wget`, and `git`
+- `python3` for the JSON in `status`, `speed` and `assess` (no third-party
+  packages; any Python 3 works). Everything else is plain shell.
 - About 3 GB of disk for the binary plus whatever your chosen model needs
-- **Nothing else for the default path.** No compiler, no Python, no Node.
+- **Nothing else for the default path.** No compiler, no Node, no pip install.
 
 Rough hardware guidance:
 
@@ -89,7 +100,7 @@ Rough hardware guidance:
 > **Read this before picking a model.** At the 65536-token context Hermes requires, the
 > **KV cache is usually the biggest consumer of VRAM, not the weights** - 9 GB on the
 > 8B before any quantization. This project therefore quantizes it by default
-> (`BONSAI_KV_TYPE=q8_0`), which cuts the cache by 1.88x at negligible quality cost and
+> (`KILN_KV_TYPE=q8_0`), which cuts the cache by 1.88x at negligible quality cost and
 > is what makes the 27B fit a 12 GB card. See
 > [docs/HARDWARE.md](docs/HARDWARE.md#vram-and-ram) for the measurements and the other
 > options.
@@ -104,14 +115,14 @@ Rough hardware guidance:
 The script backs up your Hermes config first and prints the restore command. It reads
 the model id from the running server, so start the server first.
 
-Then pick the **Bonsai** provider in Hermes.
+Then pick the **Kiln** provider in Hermes.
 
 <details>
 <summary>Doing it by hand instead</summary>
 
 ```bash
 hermes config set --force "providers.local-127\.0\.0\.1:8081.api"           "http://127.0.0.1:8081"
-hermes config set --force "providers.local-127\.0\.0\.1:8081.name"          "Bonsai"
+hermes config set --force "providers.local-127\.0\.0\.1:8081.name"          "Kiln"
 hermes config set --force "providers.local-127\.0\.0\.1:8081.default_model" "<model id>"
 hermes config set --force "model.provider" "local-127.0.0.1:8081"
 hermes config set --force "model.default"  "<model id>"
@@ -126,6 +137,16 @@ contains dots.
 > model. Hermes does this for you. If you call the API directly, pass `"model": "<id>"`
 > or you will get `model name is missing from the request`. List the ids with
 > `curl -s localhost:8081/v1/models`.
+
+### Letting the Hermes agent drive Kiln
+
+Every install (`./setup.sh` or `./install.sh`) also drops a Kiln **skill** into
+`~/.hermes/skills/kiln/SKILL.md`, when `~/.hermes` already exists. That teaches the
+Hermes agent on the machine how to install, start, tune, and wire Kiln on its own —
+so a colleague can just ask Hermes to "run a local model" instead of following these
+steps by hand. It is skipped silently if Hermes is not installed, and `install.sh
+--uninstall` removes only the skill Kiln installed (a hand-edited one is left alone).
+
 
 ## Getting models
 
@@ -226,10 +247,10 @@ the splits yourself, `--context` and `--kv-type` as above.
 ./scripts/stop-server.sh               # stop it
 ./scripts/stop-server.sh --status      # is it running?
 
-BONSAI_PORT=9000 ./scripts/start-server.sh   # different port
-BONSAI_CTX=32768 ./scripts/start-server.sh   # smaller context, less VRAM
-BONSAI_KV_TYPE=iq4_nl ./scripts/start-server.sh   # smaller KV cache, more models fit
-BONSAI_KV_TYPE=f16 ./scripts/start-server.sh      # no KV quantization
+KILN_PORT=9000 ./scripts/start-server.sh   # different port
+KILN_CTX=32768 ./scripts/start-server.sh   # smaller context, less VRAM
+KILN_KV_TYPE=iq4_nl ./scripts/start-server.sh   # smaller KV cache, more models fit
+KILN_KV_TYPE=f16 ./scripts/start-server.sh      # no KV quantization
 ```
 
 To push the cache to a quarter of its f16 size without giving up quality, build a
@@ -237,8 +258,8 @@ mean-centering bias file and pair it with a `q4_0` K cache:
 
 ```bash
 ./scripts/make-kv-bias.sh                          # one command, no external data
-BONSAI_KV_TYPE_K=q4_0 BONSAI_KV_TYPE_V=q8_0 \
-BONSAI_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" \
+KILN_KV_TYPE_K=q4_0 KILN_KV_TYPE_V=q8_0 \
+KILN_EXTRA_ARGS="--kv-mean-center models/kv-mean-center-<model>.gguf" \
 ./scripts/start-server.sh
 ```
 
@@ -250,32 +271,35 @@ for the measured numbers.
 Everything goes through one command. You do not need to know systemd:
 
 ```bash
-./scripts/bonsai start      # start it
-./scripts/bonsai status     # is it up, on which port, what is loaded
-./scripts/bonsai stop
-./scripts/bonsai logs -f
-./scripts/bonsai speed      # quick tokens/sec check
-./scripts/bonsai tune       # find the fastest settings on this machine
-./scripts/bonsai assess     # what fits
-./scripts/bonsai models     # what is installed
-./scripts/bonsai help
+./scripts/kiln start      # start it
+./scripts/kiln status     # is it up, on which port, what is loaded
+./scripts/kiln stop
+./scripts/kiln logs -f
+./scripts/kiln speed      # quick tokens/sec check
+./scripts/kiln fastest    # every measured configuration on this backend, fastest first
+./scripts/kiln bench      # measure a model on this machine (writes its row)
+./scripts/kiln identity   # is the MTP draft lossless on this backend?
+./scripts/kiln tune       # find the fastest settings on this machine
+./scripts/kiln assess     # what fits
+./scripts/kiln models     # what is installed
+./scripts/kiln help
 ```
 
 ### Settings, without reinstalling
 
-`./scripts/bonsai set` writes a plain settings file, `.state/service.env`:
+`./scripts/kiln set` writes a plain settings file, `.state/service.env`:
 
 ```bash
-./scripts/bonsai set ctx 32768
-./scripts/bonsai set kv iq4_nl
-./scripts/bonsai set ngl 24
-./scripts/bonsai restart      # apply
+./scripts/kiln set ctx 32768
+./scripts/kiln set kv iq4_nl
+./scripts/kiln set ngl 24
+./scripts/kiln restart      # apply
 ```
 
 The file is readable and editable by hand, and it is the single source of settings for
 both the launcher and the service. Changing a value never means reinstalling anything. A
 value exported in your shell still wins, so a one-off
-`BONSAI_CTX=8192 ./scripts/start-server.sh` works too.
+`KILN_CTX=8192 ./scripts/start-server.sh` works too.
 
 ### As a service (optional)
 
@@ -285,12 +309,68 @@ value exported in your shell still wins, so a one-off
 
 This writes a systemd **user** unit and stops there. It does **not** enable it and does
 **not** start it — a model server holds VRAM and CPU the whole time it runs, so starting
-it is always your decision. Once installed, `./scripts/bonsai start` uses the service
-automatically; without it, `bonsai` starts the server in the background instead.
+it is always your decision. Once installed, `./scripts/kiln start` uses the service
+automatically; without it, `kiln` starts the server in the background instead.
 
 ```bash
-systemctl --user enable ikaros-bonsai    # only if you want it at login
+systemctl --user enable kiln    # only if you want it at login
 ```
+
+### The speed-first defaults
+
+Three levers carry the measured speed, in order of size: **full GPU offload**
+(up to 4.2x), the **MTP speculative head** (+23-33% with a grafted file on
+Turing/Ampere, +15% on Vulkan, +6% on ROCm), then the KV cache type (a few
+percent). The first two are applied for you:
+
+- `start-server.sh` keeps `-ngl 99`, the full offload.
+- When the models directory holds a `*-mtp.gguf`, `draft-mtp` is switched on
+  automatically and the draft window is picked per backend (Vulkan 2, ROCm and
+  CUDA 1) - the measured winner on each. Override with `KILN_SPEC_TYPE=none`.
+- llama.cpp's own default spec type, `ngram-mod`, is removed first with
+  `--no-spec-type ngram-mod`: `--spec-type` is additive upstream, and on the
+  PrismML ternary models `ngram-mod` silently no-ops (accepted, no log output,
+  decode unchanged) while still sharing the verify batch. Set
+  `KILN_SPEC_STACK=upstream` to keep it. See
+  [docs/SPEED-BEYOND-MTP-2026-10.md](docs/SPEED-BEYOND-MTP-2026-10.md) for the
+  measurements and the other model-file-independent speed levers.
+
+`fastest` reads only rows this machine measured, on this backend and release.
+`fastest --json` emits the same rows as JSON for a script or agent to consume
+(`rows[].tok_s`, `draft_acceptance`, `offload_layers`; unrecorded fields are
+`null`, never a guessed `0`):
+
+```
+  backend cuda   release prism-b10772-e8fd209   card GeForce RTX 2070
+
+    tok/s  model                                      offload  measured at
+    46.1  Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean            36  65536 ctx, q4_0 KV
+    42.6  Ternary-Bonsai-2-27B-PTQ1_0-mtp-lean            36  65536 ctx, q4_0 KV
+```
+
+A number with no row behind it is never shown; run `bench` (or `--measure
+--speed`, or `--sweep`) to create the rows first.
+
+### Speed is one axis, not the whole answer
+
+`fastest` and `--tune` rank on tok/s but report two things that decide whether
+a number is *advice*:
+
+- **draft acceptance** — the share of drafted tokens the target model accepted.
+  Below **0.10** the verify passes cost more than the drafts save, so a weak
+  row is marked as such and a weak-draft variant is not allowed to take the
+  top slot in `--tune`. A spec type that prints no draft line at all (which is
+  what `ngram-*` does on the PrismML ternary models, issue #203) is reported
+  as **no drafts**, not as zero acceptance.
+- **losslessness** — `kiln identity` runs the same greedy prompt with the
+  draft on and off and compares the text byte for byte. On CUDA
+  `GGML_CUDA_BATCH_INVARIANT=1` makes them identical; on Vulkan (which has no
+  equivalent) a near-tie can flip a token, which the check reports plainly.
+
+`--tune` also starts one server per variant instead of one per repetition
+(three reps inside a single load, median taken): the cache-type flags are
+start-time, so the old per-rep restarts bought the same measurement three
+times as slowly.
 
 ## Getting the most tokens per second
 
@@ -312,7 +392,7 @@ by how much memory you have, and ignore thread tuning.
 refuses to call a difference smaller than run-to-run noise a win:
 
 ```bash
-./scripts/bonsai tune
+./scripts/kiln tune
 ```
 
 ```
@@ -325,7 +405,7 @@ refuses to call a difference smaller than run-to-run noise a win:
 
 Fastest: f16 KV, ubatch 512 at 93.5 tok/s.
   Serve it with:
-    BONSAI_KV_TYPE=f16 ./scripts/start-server.sh
+    KILN_KV_TYPE=f16 ./scripts/start-server.sh
 ```
 
 That is the trade in one line: `f16` KV buys about 5% and costs 1.88x the cache. If the
@@ -337,7 +417,7 @@ This beats everything above. If your model file is a `*-mtp.gguf` it already car
 MTP head, so no second file is needed:
 
 ```bash
-BONSAI_SPEC_TYPE=draft-mtp ./scripts/bonsai start
+KILN_SPEC_TYPE=draft-mtp ./scripts/kiln start
 ```
 
 Measured here on the 27B MTP file at 65536 with a `q8_0` cache, three generations each:
@@ -366,10 +446,10 @@ above** ROCm with `n-max 1`. Vulkan is slower without MTP, and it is not batch-i
 
 ```bash
 BACKEND=vulkan ./scripts/setup.sh          # no ROCm needed
-BONSAI_SPEC_DRAFT_N_MAX=2 ./scripts/bonsai start
+KILN_SPEC_DRAFT_N_MAX=2 ./scripts/kiln start
 ```
 
-There is also `BONSAI_DRAFT_MODEL` for a separate `*-dspark-*` drafter. Using a smaller
+There is also `KILN_DRAFT_MODEL` for a separate `*-dspark-*` drafter. Using a smaller
 Bonsai as a drafter for a bigger one was tested and does not work: the vocabulary is
 compatible, but too few predictions are accepted. See
 [docs/HARDWARE.md](docs/HARDWARE.md#speculative-decoding).
@@ -418,19 +498,37 @@ See [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md) for details.
   project's ROCm or Vulkan path is what you want; if you are on an RTX card, look there
   first.
 
+## Exit codes
+
+`kiln` and the scripts follow the usual convention: `0` success, `1` a
+runtime failure (no server answering, no model installed, out of memory), `2`
+a usage error (unknown command or flag, bad value, missing argument). A
+wrapper can tell "you called me wrong" from "the world is wrong" without
+parsing stderr.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BONSAI_PORT` | `8081` | listening port |
-| `BONSAI_CTX` | `65536` | context size |
-| `BONSAI_NGL` | `99` | GPU layers |
-| `BONSAI_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
-| `BONSAI_KV_TYPE_K` / `_V` | follow `BONSAI_KV_TYPE` | set the two halves independently |
-| `BONSAI_MODELS_DIR` | `./models` | where models are stored |
-| `BONSAI_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
-| `BONSAI_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` |
-| `BONSAI_SPEC_DRAFT_N_MAX` | `1` | tokens to draft; 2 measured slower on a stock build |
+| `KILN_PORT` | `8081` | listening port |
+| `KILN_HOST` | `127.0.0.1` | listening address; `0.0.0.0` to reach the server from other machines on your network |
+| `KILN_CTX` | `65536` | context size |
+| `KILN_NGL` | `99` | GPU layers |
+| `KILN_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
+| `KILN_KV_TYPE_K` / `_V` | follow `KILN_KV_TYPE` | set the two halves independently; `_V` alone quantizes only the value cache (measured near-lossless, unlike quantizing K) |
+| `KILN_MODELS_DIR` | `./models` | where models are stored |
+| `KILN_THREADS` | all logical cores | CPU threads; measured as noise under full GPU offload, the largest lever on CPU-only or partial-offload |
+| `KILN_EXTRA_ARGS` | unset | extra `llama-server` flags, e.g. `--ubatch-size 256` |
+| `KILN_SPEC_DRAFT_P_MIN` | `0.0` | draft probability floor (disabled); `0.8` lets deeper `n-max` pay off on some hardware |
+| `KILN_START_TIMEOUT` | `120` | seconds to wait for the server to become healthy; raise it for a slow first load |
+| `KILN_DRAFT_MODEL` | unset | a `*-dspark-*` drafter for speculative decoding |
+| `KILN_SPEC_TYPE` | unset | `draft-mtp` to use the MTP head inside a `*-mtp.gguf` (auto-enabled when one is installed); `none` to disable |
+| `KILN_SPEC_STACK` | `kiln` | `upstream` keeps llama.cpp's default `ngram-mod` alongside the chosen type; `kiln` removes it first (it no-ops on the ternary models) |
+| `KILN_SPEC_DRAFT_N_MAX` | `1` | tokens to draft; 2 measured slower on a stock build |
+| `KILN_KV_BIAS_OUT` | `models/kv-mean-center-<model>.gguf` | where `make-kv-bias.sh` writes the bias file |
+| `KILN_CALIB_TOKENS` | `400` | tokens the model generates per seed prompt when building a KV bias |
+| `KILN_MOE_CACHE_MIB` | unset | GPU cache for CPU-resident MoE experts, `+1.5-1.85x` decode (needs a source build; the pinned prebuilt lacks the flag) |
+| `KILN_SLEEP_IDLE` | unset (never) | free VRAM after N idle seconds; the next request wakes and reloads (~2s). `on`=300s, or a number of seconds |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
 | `HSA_OVERRIDE_GFX_VERSION` | unset | only if your gfx target is not covered |

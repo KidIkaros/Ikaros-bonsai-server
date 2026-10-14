@@ -16,7 +16,7 @@
 #
 # Overrides:
 #   HF_TOKEN=hf_xxx             for private or gated repos
-#   BONSAI_MODELS_DIR=/path     where GGUFs land (default: <repo>/models)
+#   KILN_MODELS_DIR=/path     where GGUFs land (default: <repo>/models)
 
 set -euo pipefail
 
@@ -138,16 +138,28 @@ recommend() {
 # Download
 # ---------------------------------------------------------------------------
 
-# fetch REPO FILE - download one file into the models directory.
-# Sets FETCH_RESULT to the on-disk path.
+# fetch REPO FILE [SIZE_GB] - download one file into the models directory.
+# Sets FETCH_RESULT to the on-disk path. SIZE_GB, when known, is checked
+# against free disk first so a full SSD fails fast instead of mid-download
+# (which looks like corruption).
 fetch() {
-    _repo="$1" _file="$2"
+    _repo="$1" _file="$2" _size_gb="${3:-}"
     _dest="$(dest_for "$_repo" "$_file")"
     FETCH_RESULT="$_dest"
 
     if [ -f "$_dest" ]; then
         info "Already present: $(basename "$_dest")"
         return 0
+    fi
+
+    # Pre-flight disk check: need the model size plus a little headroom. Only
+    # when the caller told us the size; otherwise skip silently.
+    if [ -n "$_size_gb" ]; then
+        _free_gb="$(df -Pk "$(dirname "$_dest")" 2>/dev/null | awk 'NR==2{printf "%.1f", $4/1048576}')"
+        if [ -n "$_free_gb" ] && awk -v n="$_size_gb" -v f="$_free_gb" 'BEGIN{exit !(n+1 > f)}'; then
+            die "Not enough disk: $_file needs ~${_size_gb} GB but only ${_free_gb} GB free in $(dirname "$_dest").
+       Free up space, or pick a smaller model: ./scripts/get-models.sh --list"
+        fi
     fi
 
     _url="https://huggingface.co/$_repo/resolve/main/$_file"
@@ -325,8 +337,9 @@ case "$MODE" in
         _row="$(row_by_number "$ARG")" || die "No catalog entry number $ARG."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Fetching $_file"
-        fetch "$_repo" "$_file"
+        fetch "$_repo" "$_file" "$_size"
         ;;
 
     recommend)
@@ -335,11 +348,23 @@ case "$MODE" in
         _row="$(row_by_number "$_n")" || die "Recommendation $_n is not a valid entry."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Recommended for this machine"
         printf '  %s%s\n' "$C_DIM" "$_repo"
         printf '%s' "$C_RESET"
-        printf '  %s\n\n' "$_file"
-        fetch "$_repo" "$_file"
+        printf '  %s\n' "$_file"
+        # Say WHY: param count + quant + VRAM fit, so the choice is legible.
+        dim "  $(model_reason "$_file" "${VRAM_GB:-0}")"
+        # Vulkan has only partial PQ2_0/PTQ1_0 support. The interactive picker
+        # warns on this; so must --recommend, or an AMD/Intel box on the Vulkan
+        # backend silently gets a partially-supported quant and runs badly.
+        if [ "${BACKEND:-}" = "vulkan" ] && quant_needs_vulkan_warning "$_file"; then
+            warn "$_file uses $(quant_label "$_file"); Vulkan support for it is partial."
+            dim "  It may run slowly. A Q1_0/Q2_0 model is safer on Vulkan:"
+            dim "  ./scripts/get-models.sh --list   (pick a non-PQ2 entry)"
+        fi
+        echo ""
+        fetch "$_repo" "$_file" "$_size"
         ;;
 
     "")
@@ -347,13 +372,32 @@ case "$MODE" in
         _n="$(recommend)"
         list_catalog
         _default="$_n"
+        # Say WHY the default is the default. A catalog of PQ2_0 / PTQ1_0 /
+        # abliterated rows asks a first-time user the one question they came
+        # to the tool to avoid - "which quant fits my card?" - so name the
+        # recommendation and its reason in one line before asking for a number.
+        if [ -n "$_n" ]; then
+            _rec_row="$(row_by_number "$_n" || true)"
+            if [ -n "$_rec_row" ]; then
+                _rec_file="$(printf '%s' "$_rec_row" | cut -d'|' -f2)"
+                _rec_vram="$(printf '%s' "$_rec_row" | cut -d'|' -f4)"
+                if [ "${_rec_vram:-0}" -gt 0 ] 2>/dev/null && [ "${VRAM_GB:-0}" -gt 0 ] 2>/dev/null; then
+                    dim "  Recommended for your ${VRAM_GB} GB card: entry $_n ($_rec_file),"
+                    dim "  it fits with room for the KV cache. Press Enter to take it,"
+                    dim "  or type another entry number."
+                else
+                    dim "  Recommended for this machine: entry $_n ($_rec_file). Press Enter to take it."
+                fi
+            fi
+        fi
         _choice="$(ask "Entry number to download" "$_default")"
         [ -n "$_choice" ] || die "Nothing selected."
         _row="$(row_by_number "$_choice")" || die "No catalog entry number $_choice."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Fetching $_file"
-        fetch "$_repo" "$_file"
+        fetch "$_repo" "$_file" "$_size"
         ;;
 esac
 

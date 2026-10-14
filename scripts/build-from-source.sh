@@ -16,6 +16,12 @@
 #                                               clone and stop (fast sanity test)
 #   ./scripts/build-from-source.sh --jobs 8     limit build parallelism
 #
+# A source build is the only way to get flags newer than the pinned prebuilt:
+# it reports which decode-speed capabilities the result carries
+# (--moe-cache-mib, --spec-type) by checking the binary's own --help, so the
+# build's value is visible rather than assumed. See
+# docs/SPEED-BEYOND-MTP-2026-10.md for what each is worth.
+#
 # Overrides:
 #   BACKEND=cpu|vulkan|cuda|rocm   force a backend
 #   PRISM_COMMIT=<sha>             build a different fork commit
@@ -47,7 +53,7 @@ load_detect
 PATCH="$REPO_ROOT/patches/0001-speedlog-ema-tps.patch"
 [ -f "$PATCH" ] || die "Patch not found: $PATCH"
 
-SRC_DIR="${BONSAI_SRC_DIR:-$REPO_ROOT/.build/llama.cpp}"
+SRC_DIR="${KILN_SRC_DIR:-$REPO_ROOT/.build/llama.cpp}"
 DEST="$BIN_DIR/$BACKEND-patched"
 
 # ---------------------------------------------------------------------------
@@ -58,7 +64,7 @@ step "Preparing source"
 info "Fork   : $PRISM_REPO"
 info "Commit : $PRISM_COMMIT"
 
-if [ -d "$SRC_DIR/.git" ] && [ -z "${BONSAI_SRC_FORCE:-}" ]; then
+if [ -d "$SRC_DIR/.git" ] && [ -z "${KILN_SRC_FORCE:-}" ]; then
     info "Reusing existing checkout at $SRC_DIR"
 else
     rm -rf "$SRC_DIR"
@@ -175,6 +181,26 @@ if [ "$_found" = 1 ]; then
 else
     warn "Could not confirm the speed-log patch in the build output."
     warn "The server will still work; only the extra UI panel may be missing."
+fi
+
+# Report the decode-speed flags this build carries beyond the pinned prebuilt.
+# A source build is the only way to get these, so the report is what tells the
+# user whether the long build bought anything they will actually use:
+#   --moe-cache-mib   1.5-1.85x decode on CPU-resident MoE experts (PR #29887)
+#   CUDA graphs       Volta/Turing enabled (PR #25749)
+# Every line is checked against the binary's own --help, never assumed.
+step "Decode-speed capabilities of this build"
+_help_text="$("$BUILT_BIN" --help 2>&1 || true)"
+if printf '%s' "$_help_text" | grep -q -- '--moe-cache-mib'; then
+    info "--moe-cache-mib present (MoE expert cache; +1.5-1.85x decode, PR #29887)."
+    dim "  Use it: KILN_MOE_CACHE_MIB=2048 ./scripts/start-server.sh"
+else
+    dim "  --moe-cache-mib not in this build (needs a newer llama.cpp than $PRISM_COMMIT)."
+fi
+if printf '%s' "$_help_text" | grep -q -- '--spec-type'; then
+    dim "  --spec-type present (draft-mtp, ngram-* and the other spec types)."
+else
+    warn "--spec-type missing from this build; speculative decoding is unavailable."
 fi
 
 # ---------------------------------------------------------------------------

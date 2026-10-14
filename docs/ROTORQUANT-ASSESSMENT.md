@@ -163,7 +163,7 @@ intent - then PrismML's fork inherits them on its next sync, and they become a o
 change exactly like `--cache-type-k q8_0` is today:
 
 ```bash
-BONSAI_KV_TYPE=planar3 ./scripts/start-server.sh
+KILN_KV_TYPE=planar3 ./scripts/start-server.sh
 ```
 
 That is the version worth waiting for, and it costs nothing to wait.

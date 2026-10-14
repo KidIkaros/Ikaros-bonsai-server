@@ -25,24 +25,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
 MAKE_DEFAULT=0
 MODEL=""
-PROV_NAME="Bonsai (local)"
+PROV_NAME="Kiln (local)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)      DRY_RUN=1 ;;
         --make-default) MAKE_DEFAULT=1 ;;
-        --model)        MODEL="${2:-}"; shift ;;
-        --name)         PROV_NAME="${2:-}"; shift ;;
+        --model)        [ $# -ge 2 ] || die "--model needs a value."; MODEL="$2"; shift ;;
+        --name)         [ $# -ge 2 ] || die "--name needs a value.";  PROV_NAME="$2"; shift ;;
         -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)              die "Unknown option: $1" ;;
     esac
-    shift
+    # Guard the shift: when a value option is the LAST argument, the shift
+    # above already emptied "$@", and a bare `shift` on an empty list returns
+    # 1 - which under `set -e` aborts the script silently, with no error.
+    [ $# -gt 0 ] && shift || true
 done
 
 command -v hermes >/dev/null 2>&1 || die "The 'hermes' CLI is not on PATH. Install Hermes first."
 
-PROVIDER="local-127.0.0.1:$BONSAI_PORT"
-BASE_URL="http://127.0.0.1:$BONSAI_PORT"
+PROVIDER="local-127.0.0.1:$KILN_PORT"
+BASE_URL="http://127.0.0.1:$KILN_PORT"
 
 # Hermes parses config keys on dots, and this provider id contains dots. Each
 # dot in the id must be backslash-escaped or `hermes config set` refuses it.
@@ -53,7 +56,7 @@ PROVIDER_KEY="$(printf '%s' "$PROVIDER" | sed 's/\./\\./g')"
 # ---------------------------------------------------------------------------
 
 if [ -z "$MODEL" ]; then
-    step "Looking for a running server on port $BONSAI_PORT"
+    step "Looking for a running server on port $KILN_PORT"
     _resp=""
     if command -v curl >/dev/null 2>&1; then
         _resp="$(curl -sf --max-time 5 "$BASE_URL/v1/models" 2>/dev/null || true)"

@@ -14,7 +14,7 @@ alongside a model rather than run on its own.
 
 **These numbers assume the defaults: 65536 context and `q8_0` KV cache.** They are
 dominated by the KV cache, not the weights - at 65536 tokens the cache alone measured
-9.0 GB on the 8B before quantization, and 4.8 GB after. Setting `BONSAI_KV_TYPE=f16`
+9.0 GB on the 8B before quantization, and 4.8 GB after. Setting `KILN_KV_TYPE=f16`
 adds roughly 4 GB to the 8B row and about 3 GB to the 27B row. See
 [HARDWARE.md](HARDWARE.md#vram-and-ram).
 
@@ -116,4 +116,4 @@ unsupported format.
 
 `./models/` by default, as `<owner>_<repo>__<file>.gguf`. That naming keeps files from
 different repos from colliding and is what the router reports as the model id (minus
-the `.gguf`). Override with `BONSAI_MODELS_DIR`.
+the `.gguf`). Override with `KILN_MODELS_DIR`.

@@ -1,0 +1,733 @@
+#!/usr/bin/env bash
+# kiln - one command to run and manage the local model server.
+#
+#   ./scripts/kiln start          start it (service if installed, else background)
+#   ./scripts/kiln stop
+#   ./scripts/kiln restart        apply settings changes
+#   ./scripts/kiln status         what is running, on which port, with what loaded
+#   ./scripts/kiln logs [-f]      follow the log
+#   ./scripts/kiln show           the current settings
+#   ./scripts/kiln set ctx 32768  change a setting
+#   ./scripts/kiln speed          quick tokens/sec check against the running server
+#   ./scripts/kiln fastest        every measured configuration, fastest first
+#   ./scripts/kiln fastest --json same, as machine-readable JSON
+#   ./scripts/kiln bench [model]  measure a model on this machine, one row
+#   ./scripts/kiln identity [model]  is the MTP draft lossless on this backend?
+#   ./scripts/kiln tune           find the fastest settings on this machine
+#   ./scripts/kiln apply          persist the last tune's winner to settings
+#   ./scripts/kiln assess         what fits, and how the KV type changes it
+#   ./scripts/kiln coverage       which settings have been tried, and which have not
+#   ./scripts/kiln models         list installed models
+#   ./scripts/kiln up             one command: model + start + wire Hermes
+#   ./scripts/kiln preset <name>  apply a named recipe (fastest, balanced, low-vram, safe)
+#   ./scripts/kiln report [path]  write a shareable diagnostic bundle (no upload)
+#   ./scripts/kiln dash           full-screen status dashboard (q to quit)
+#   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
+#
+# Settings live in .state/service.env. Editing it, or using `set`, is enough:
+# nothing needs reinstalling.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+UNIT_NAME="kiln.service"
+
+CMD="${1:-help}"
+shift || true
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+have_systemd() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+unit_installed() {
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT_NAME" ]
+}
+
+# settings_write VAR VAL - persist one setting to service.env, replacing any
+# prior value. The single write path for both `set` and `preset`, so they can
+# never drift on the file format.
+settings_write() {
+    local _var="$1" _val="$2" _tmp
+    _tmp="$SETTINGS_FILE.tmp"
+    if [ -f "$SETTINGS_FILE" ]; then
+        grep -v "^$_var=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
+    else
+        {
+            printf '# Settings for the Kiln local model server.\n'
+            printf '# Edit a value and restart: ./scripts/kiln restart\n'
+            printf '\n'
+        } > "$_tmp"
+    fi
+    printf '%s=%s\n' "$_var" "$_val" >> "$_tmp"
+    mv "$_tmp" "$SETTINGS_FILE"
+}
+
+service_active() {
+    have_systemd && unit_installed &&
+        systemctl --user is-active "$UNIT_NAME" >/dev/null 2>&1
+}
+
+our_pid() {
+    if [ -f "$STATE_DIR/server.pid" ]; then
+        local _p
+        _p="$(cat "$STATE_DIR/server.pid" 2>/dev/null || true)"
+        if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then printf '%s' "$_p"; return 0; fi
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        local _p
+        for _p in $(lsof -ti "tcp:$KILN_PORT" 2>/dev/null || true); do
+            local _cmd
+            _cmd="$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null || true)"
+            case "$_cmd" in *"$BIN_DIR"*|*"$REPO_ROOT"*) printf '%s' "$_p"; return 0 ;; esac
+        done
+    fi
+    return 1
+}
+
+server_up() {
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -sf --max-time 3 "http://127.0.0.1:$KILN_PORT/health" >/dev/null 2>&1
+}
+
+# Commands that report on the machine need the detection, not just the settings.
+ensure_detect() {
+    if detect_is_stale; then
+        "$SCRIPT_DIR/detect.sh" >/dev/null 2>&1 || true
+    fi
+    load_detect 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+case "$CMD" in
+    start)
+        reject_any_flags start "$@"
+        load_settings
+        if service_active; then
+            info "Already running as $UNIT_NAME."
+            exit 0
+        fi
+        if server_up; then
+            info "Something is already answering on port $KILN_PORT."
+            dim "  ./scripts/kiln status  to see what"
+            exit 0
+        fi
+        if unit_installed && have_systemd; then
+            systemctl --user start "$UNIT_NAME"
+            info "Started $UNIT_NAME."
+            dim "  ./scripts/kiln logs -f"
+        else
+            "$SCRIPT_DIR/start-server.sh" --no-browser --background || exit 1
+        fi
+        # Synergy: now that it is up, register it as a Hermes provider so it
+        # shows in `hermes model` and Hermes Desktop. Silent no-op without the
+        # hermes CLI; never forces it active (the user still picks it).
+        if auto_wire_hermes "$SCRIPT_DIR"; then
+            dim "  Registered with Hermes. Pick it in: hermes model"
+        fi
+        ;;
+
+    stop)
+        reject_any_flags stop "$@"
+        load_settings
+        if service_active; then
+            systemctl --user stop "$UNIT_NAME"
+            info "Stopped $UNIT_NAME."
+        else
+            "$SCRIPT_DIR/stop-server.sh"
+        fi
+        ;;
+
+    restart)
+        reject_any_flags restart "$@"
+        load_settings
+        if service_active || (unit_installed && have_systemd); then
+            systemctl --user restart "$UNIT_NAME" 2>/dev/null || {
+                systemctl --user start "$UNIT_NAME"
+            }
+            info "Restarted $UNIT_NAME."
+        else
+            "$SCRIPT_DIR/stop-server.sh" >/dev/null 2>&1 || true
+            "$SCRIPT_DIR/start-server.sh" --no-browser --background
+        fi
+        ;;
+
+    status)
+        reject_any_flags status "$@"
+        load_settings
+        ensure_detect
+        step "Status"
+
+        if service_active; then
+            info "Service : $UNIT_NAME (active)"
+        elif unit_installed; then
+            info "Service : $UNIT_NAME (installed, stopped)"
+        else
+            dim "  Service : not installed (./scripts/install-service.sh to add it)"
+        fi
+
+        if server_up; then
+            if _pid="$(our_pid)"; then
+                info "Server  : answering on http://localhost:$KILN_PORT (pid $_pid)"
+            else
+                warn "Server  : port $KILN_PORT answers, but it is not this repo's server."
+                dim "            Another instance owns the port; this one is stopped."
+            fi
+        else
+            warn "Server  : nothing answering on port $KILN_PORT"
+        fi
+
+        info "KV cache: $(kv_type_effective)"
+        info "Context : $KILN_CTX"
+        if [ -n "${GPU_NAME:-}" ]; then
+            info "GPU     : $GPU_NAME (${BACKEND:-unknown})"
+        fi
+
+        if server_up; then
+            _loaded="$(curl -s --max-time 5 "http://127.0.0.1:$KILN_PORT/v1/models" 2>/dev/null |
+                python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    for m in d.get("data", []):
+        if m.get("status", {}).get("value") == "loaded":
+            print(m["id"]); break
+except Exception:
+    pass
+' 2>/dev/null || true)"
+            if [ -n "$_loaded" ]; then
+                info "Model   : $_loaded"
+            else
+                dim "  Model   : none loaded (they load on first request)"
+            fi
+        fi
+        ;;
+
+    logs)
+        load_settings
+        reject_unknown_flags logs "-f" -- "$@"
+        FOLLOW=""
+        [ "${1:-}" = "-f" ] && FOLLOW="-f"
+        if service_active; then
+            # shellcheck disable=SC2086
+            journalctl --user -u "$UNIT_NAME" -n 100 $FOLLOW
+        elif [ -f "$STATE_DIR/server.log" ]; then
+            # shellcheck disable=SC2086
+            tail -n 100 $FOLLOW "$STATE_DIR/server.log"
+        else
+            dim "No log yet. Start the server first."
+        fi
+        ;;
+
+    show)
+        reject_any_flags show "$@"
+        load_settings
+        step "Settings"
+        if [ -f "$SETTINGS_FILE" ]; then
+            dim "  from $SETTINGS_FILE"
+            echo ""
+            grep -v '^#' "$SETTINGS_FILE" | grep -v '^$' | sed 's/^/  /'
+        else
+            dim "  No settings file yet; defaults are in use."
+            dim "  ./scripts/install-service.sh  writes one, or use ./scripts/kiln set"
+        fi
+        echo ""
+        dim "  Effective values:"
+        printf '    %-18s %s\n' "port" "$KILN_PORT" "context" "$KILN_CTX" \
+            "gpu layers" "$KILN_NGL" "kv type" "$(kv_type_effective)" >&2
+        ;;
+
+    set)
+        KEY="${1:-}"
+        VAL="${2:-}"
+        if [ -z "$KEY" ] || [ -z "$VAL" ]; then
+            usage_die "Usage: ./scripts/kiln set <key> <value>
+       keys: port, ctx, ngl, kv, threads, models, moe-cache-mib"
+        fi
+
+        case "$(printf '%s' "$KEY" | tr '[:upper:]' '[:lower:]')" in
+            port)        VAR="KILN_PORT" ;;
+            ctx|context) VAR="KILN_CTX" ;;
+            ngl|gpu-layers) VAR="KILN_NGL" ;;
+            threads|cpu-threads) VAR="KILN_THREADS" ;;
+            kv|kv-type)  VAR="KILN_KV_TYPE" ;;
+            models|models-dir) VAR="KILN_MODELS_DIR" ;;
+            moe-cache-mib|moe-cache) VAR="KILN_MOE_CACHE_MIB" ;;
+            spec-type)   VAR="KILN_SPEC_TYPE" ;;
+            spec-stack)  VAR="KILN_SPEC_STACK" ;;
+            sleep-idle|idle-sleep) VAR="KILN_SLEEP_IDLE" ;;
+            KILN_*)    VAR="$KEY" ;;
+            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib, spec-type, spec-stack, sleep-idle" ;;
+        esac
+
+        case "$VAR" in
+            KILN_CTX|KILN_PORT|KILN_NGL|KILN_THREADS|KILN_MOE_CACHE_MIB)
+                case "$VAL" in ''|*[!0-9]*) usage_die "$KEY needs a number, got '$VAL'." ;; esac ;;
+            KILN_KV_TYPE)
+                case "$VAL" in
+                    auto) ;;
+                    *) kv_type_valid "$VAL" ||
+                        usage_die "Unknown KV cache type '$VAL'. Allowed: auto, $KV_CACHE_TYPES" ;;
+                esac ;;
+            KILN_SPEC_TYPE)
+                case "$VAL" in
+                    none|draft-simple|draft-eagle3|draft-mtp|draft-dflash|draft-dspark|\
+                    ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|ngram-cache) ;;
+                    *) usage_die "Unknown spec type '$VAL'. Allowed: none, draft-mtp, ngram-mod, ..." ;;
+                esac ;;
+            KILN_SPEC_STACK)
+                case "$VAL" in
+                    kiln|upstream) ;;
+                    *) usage_die "Unknown spec stack '$VAL'. Allowed: kiln, upstream" ;;
+                esac ;;
+            KILN_SLEEP_IDLE)
+                case "$(printf '%s' "$VAL" | tr '[:upper:]' '[:lower:]')" in
+                    on|off|none|never) ;;
+                    ''|*[!0-9-]*) usage_die "sleep-idle needs seconds, or on/off, got '$VAL'." ;;
+                esac ;;
+        esac
+
+        mkdir -p "$STATE_DIR"
+        settings_write "$VAR" "$VAL"
+
+        info "$VAR=$VAL"
+        if service_active; then
+            dim "  Restart to apply: ./scripts/kiln restart"
+        fi
+        ;;
+
+    preset)
+        # Named, measured recipes so a newcomer never has to understand
+        # spec-decode internals. Each preset writes the same service.env keys
+        # `set` would, then says to restart. Conservative by design: presets
+        # only touch speed/decoding knobs, never the model or memory.
+        _preset="${1:-}"
+        [ -n "$_preset" ] || { reject_any_flags preset; usage_die "Usage: ./scripts/kiln preset <name>
+  fastest    max tok/s: MTP drafting on, tight KV (the measured winner)
+  balanced   MTP drafting on, standard KV (default-quality sweet spot)
+  low-vram   no drafting, smallest KV, for tight GPUs
+  safe       no speculative decoding at all (most compatible)
+Try: ./scripts/kiln preset" ; }
+        case "$_preset" in
+            fastest)
+                _p_set="KILN_SPEC_TYPE=draft-mtp KILN_SPEC_STACK=kiln KILN_KV_TYPE=q8_0 KILN_CTX=32768"
+                _p_why="MTP drafting + tight KV at a 32K window - the measured fastest path"
+                ;;
+            balanced)
+                _p_set="KILN_SPEC_TYPE=draft-mtp KILN_SPEC_STACK=kiln KILN_KV_TYPE=auto KILN_CTX=65536"
+                _p_why="MTP drafting + auto KV at the full 64K window - speed with headroom"
+                ;;
+            low-vram)
+                _p_set="KILN_SPEC_TYPE=none KILN_SPEC_STACK=kiln KILN_KV_TYPE=q4_0 KILN_CTX=16384"
+                _p_why="no drafting, smallest KV, 16K window - for tight GPUs"
+                ;;
+            safe)
+                _p_set="KILN_SPEC_TYPE=none KILN_SPEC_STACK=kiln KILN_KV_TYPE=q8_0 KILN_CTX=32768"
+                _p_why="no speculative decoding - the most compatible, least surprising"
+                ;;
+            *) usage_die "Unknown preset '$_preset'. Try: fastest, balanced, low-vram, safe" ;;
+        esac
+        step "Applying preset: $_preset"
+        dim "  $_p_why"
+        mkdir -p "$STATE_DIR"
+        # settings_write replaces any prior value, so a preset fully owns its
+        # knobs (no stale older value) with one call per key.
+        for _kv in $_p_set; do
+            settings_write "${_kv%%=*}" "${_kv#*=}"
+            info "$_kv"
+        done
+        if service_active; then
+            dim "  Restart to apply: ./scripts/kiln restart"
+        fi
+        ;;
+
+    speed)
+        load_settings
+        server_up || die "Nothing answering on port $KILN_PORT. Start it first."
+        _model="$(curl -s --max-time 5 "http://127.0.0.1:$KILN_PORT/v1/models" 2>/dev/null |
+            python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    ms = d.get("data", [])
+    print(ms[0]["id"] if ms else "")
+except Exception:
+    pass
+' 2>/dev/null || true)"
+        [ -n "$_model" ] || die "The server reported no models."
+        step "Speed check"
+        dim "  One short generation against the running server."
+        # Warm up first: the very first request after load pays cold-cache and
+        # kernel costs, so measuring it reports a misleadingly low number (a
+        # fresh-home cold start read 5.6 tok/s vs 57 steady-state). A throwaway
+        # generation absorbs that; the measured one below is the real rate.
+        curl -s --max-time 120 "http://127.0.0.1:$KILN_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' "$_model")" \
+            >/dev/null 2>&1 || true
+        # Router mode rejects a request that does not name a model, so the id
+        # from /v1/models goes into the payload - without it every check fails
+        # with "model name is missing from the request", which reads as a
+        # broken server rather than a missing field.
+        _tps="$(curl -s --max-time 300 "http://127.0.0.1:$KILN_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"Write a short paragraph about the sea."}],"max_tokens":64,"temperature":0.7}' "$_model")" 2>/dev/null |
+            python3 -c '
+import json, sys
+try:
+    print(round(json.load(sys.stdin).get("timings", {}).get("predicted_per_second", 0), 1))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+        if [ -z "$_tps" ] || [ "$_tps" = "0" ]; then
+            die "No measurement came back. Is a model loaded?"
+        fi
+        info "$_tps tok/s on $_model"
+        dim "  ./scripts/kiln tune  to see whether other settings are faster"
+        ;;
+
+    fastest)
+        load_settings
+        ensure_detect
+        # --json emits the measured rows as structured data for a script or a
+        # future skill to consume, without parsing the table. Same source, same
+        # numbers - a JSON row and a table row can never disagree.
+        _fast_json=0
+        reject_unknown_flags fastest "--json" -- "$@"
+        for _a in "$@"; do
+            [ "$_a" = "--json" ] && _fast_json=1
+        done
+        _rows="$(speed_rows "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}")"
+
+        if [ "$_fast_json" = 1 ]; then
+            # Sorted by tok/s descending, same as the table. Fields match the
+            # cache columns; empty offload/acceptance emit as null, never as a
+            # guessed 0 - "not recorded" and "measured zero" are different.
+            printf '{'
+            printf '"backend":"%s",' "$(json_escape "${BACKEND:-unknown}")"
+            printf '"release":"%s",' "$(json_escape "${PRISM_RELEASE:-unknown}")"
+            printf '"card":"%s",' "$(json_escape "${GPU_NAME:-unknown}")"
+            printf '"measured":%s,' "$([ -n "$_rows" ] && echo true || echo false)"
+            printf '"rows":['
+            if [ -n "$_rows" ]; then
+                _first=1
+                printf '%s\n' "$_rows" | sort -t"$(printf '\t')" -k6,6rn |
+                    while IFS=$'\t' read -r _m _c _t _b _r _tps _ngl _acc; do
+                        [ "$_first" = 1 ] || printf ','
+                        _first=0
+                        printf '{'
+                        printf '"model":"%s",' "$(json_escape "$_m")"
+                        printf '"context":%s,' "${_c:-null}"
+                        printf '"kv_type":"%s",' "$(json_escape "$_t")"
+                        printf '"tok_s":%s,' "${_tps:-null}"
+                        printf '"offload_layers":%s,' "${_ngl:-null}"
+                        printf '"draft_acceptance":%s,' "${_acc:-null}"
+                        if [ -n "$_acc" ]; then
+                            printf '"draft_verdict":"%s"' "$(acceptance_verdict "$_acc")"
+                        else
+                            printf '"draft_verdict":"off"'
+                        fi
+                        printf '}'
+                    done
+            fi
+            printf ']}\n'
+            exit 0
+        fi
+
+        step "Fastest known configuration"
+        printf '  backend %s   release %s   card %s\n\n' \
+            "${BACKEND:-unknown}" "${PRISM_RELEASE:-unknown}" "${GPU_NAME:-unknown}"
+        if [ -z "$_rows" ]; then
+            warn "No measured rows for this backend and release yet."
+            echo ""
+            # bench first, because it measures and benchmarks in one command:
+            # the measure-then-speed ordering used to be invisible, and the
+            # assess.sh flags below are for when someone wants the pieces
+            # separately (a sweep, or the full tune matrix).
+            dim "  Create the rows on this machine:"
+            dim "    ./scripts/kiln bench                 # measure + benchmark, one command"
+            dim "    ./scripts/kiln bench <model.gguf>    # or a specific model"
+            echo ""
+            dim "  More, when you want them:"
+            dim "    ./scripts/assess.sh --sweep               # the offload split curve"
+            dim "    ./scripts/assess.sh --tune                # the settings that matter"
+            echo ""
+            exit 0
+        fi
+        printf '  %8s  %-34s %-8s %8s  %s\n' "tok/s" "model" "offload" "draft" "verdict"
+        printf '  %s\n' "--------------------------------------------------------------------------------------"
+        # Sort on field 6 (tok/s) explicitly: the cache's first column is the
+        # model name, so a plain `sort -rn` would order rows by model name and
+        # quietly present the slowest configuration first.
+        printf '%s\n' "$_rows" | sort -t"$(printf '\t')" -k6,6rn |
+            while IFS=$'\t' read -r _m _c _t _b _r _tps _ngl _acc; do
+                # "off" means the run used no spec type; "no drafts" means one
+                # was attempted and the build reported nothing. Distinct, so a
+                # baseline row is not read as a failed draft.
+                _shown="${_acc:-off}"
+                if [ -n "$_acc" ]; then
+                    _verdict="$(acceptance_verdict "$_acc")"
+                else
+                    _verdict="(no spec type)"
+                fi
+                printf '  %8s  %-34s %-8s %8s  %s\n' \
+                    "$_tps" "${_m:0:34}" "${_ngl:-?}" "$_shown" "$_verdict"
+            done
+        echo ""
+        # The disable rule: below 0.10 the drafts are rejected often enough
+        # that the verify passes cost more than they save (PR #19164), and on
+        # the ternary models a spec type reports no draft line at all - both
+        # are "this lever is not paying here", said plainly.
+        if printf '%s\n' "$_rows" | awk -F'\t' '$8 != "" && $8 < 0.10' | grep -q .; then
+            warn "Some rows have draft acceptance below 0.10 - the drafts are not landing."
+            dim "  A spec type that does not pay here is slower than no spec type."
+            dim "  Serve without it: KILN_SPEC_TYPE=none ./scripts/start-server.sh"
+            echo ""
+        fi
+        dim "  Every number is measured on this backend and release, never estimated."
+        dim "  The offload level and draft acceptance are recorded with the"
+        dim "  measurement: a tok/s row without them does not reproduce."
+        ;;
+
+    bench)
+        load_settings
+        ensure_detect
+        _model="${1:-}"
+        if [ -z "$_model" ]; then
+            _first="$(find "$MODELS_DIR" -maxdepth 1 -name '*.gguf' \
+                -not -name '*mmproj*' -not -name 'kv-mean-center-*' 2>/dev/null | sort | head -1)"
+            [ -n "$_first" ] || die "No models in $MODELS_DIR. Run: ./scripts/get-models.sh"
+            _model="$_first"
+            dim "  Using $(basename "$_model"); pass a path to pick another."
+        fi
+        [ -f "$_model" ] || die "No such model: $_model"
+        # The measurement is a prerequisite, not a separate command to know
+        # about: bench on an unmeasured model measured it here rather than
+        # dying with "run ./scripts/assess.sh --measure" - the ordering was
+        # invisible to a first-time user, who had no reason to think a speed
+        # check needed a prior geometry check.
+        _bench_args=()
+        if ! kv_measured "$_model"; then
+            _bench_args=(--measure)
+            dim "  $(basename "$_model") is not measured yet; measuring first."
+        fi
+        exec "$SCRIPT_DIR/assess.sh" "${_bench_args[@]}" --speed --model "$_model"
+        ;;
+
+    identity)
+        # Correctness axis: speculative decoding is only a speed win if the
+        # output is the output. On CUDA, GGML_CUDA_BATCH_INVARIANT=1 makes the
+        # verify batch numerically identical to the serial path, so greedy text
+        # with the head is byte-identical to greedy text without it. Without
+        # the knob (and on Vulkan, which has no equivalent) a near-tie can flip
+        # a token late in an answer. This runs the same prompt both ways and
+        # compares, so "fastest" is never quoted without "correct".
+        load_settings
+        ensure_detect
+        _model="${1:-}"
+        if [ -z "$_model" ]; then
+            _first="$(find "$MODELS_DIR" -maxdepth 1 -name '*.gguf' \
+                -not -name '*mmproj*' -not -name 'kv-mean-center-*' 2>/dev/null | sort | head -1)"
+            [ -n "$_first" ] || die "No models in $MODELS_DIR. Run: ./scripts/get-models.sh"
+            _model="$_first"
+            dim "  Using $(basename "$_model"); pass a path to pick another."
+        fi
+        [ -f "$_model" ] || die "No such model: $_model"
+        if ! file_has_mtp_head "$_model"; then
+            die "$(basename "$_model") has no MTP head, so there is nothing to
+       compare against. Use an *-mtp.gguf."
+        fi
+        exec "$SCRIPT_DIR/assess.sh" --identity --model "$_model"
+        ;;
+
+    tune)   load_settings; exec "$SCRIPT_DIR/assess.sh" --tune "$@" ;;
+    apply)  load_settings; ensure_detect; apply_tune_best ;;
+    assess) load_settings; exec "$SCRIPT_DIR/assess.sh" "$@" ;;
+    coverage) load_settings; exec "$SCRIPT_DIR/assess.sh" --coverage ;;
+
+    models)
+        reject_any_flags models "$@"
+        load_settings
+        step "Installed models"
+        _n=0
+        while IFS= read -r _m; do
+            _n=$((_n + 1))
+            printf '  %2d. %s  (%s)\n' "$_n" "$(basename "$_m" .gguf)" \
+                "$(human_size "$(model_size_bytes "$_m")")"
+        done < <(find "$MODELS_DIR" -name '*.gguf' -not -name '*mmproj*' \
+            -not -name 'kv-mean-center-*' 2>/dev/null | sort)
+        [ "$_n" -gt 0 ] || dim "  none yet. ./scripts/get-models.sh"
+        ;;
+
+    help|--help|-h|"")
+        kiln_logo
+        echo
+        sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+
+    dash)
+        reject_any_flags dash "$@"
+        # Full-screen dashboard. Pure bash + ANSI, no toolchain. On a TTY it
+        # owns the keyboard; piped it prints one static snapshot and exits.
+        exec "$SCRIPT_DIR/kiln-dash.sh"
+        ;;
+
+    up)
+        reject_any_flags up "$@"
+        # The one magic command for a returning user: make sure a model exists
+        # (recommend + download if none), start the server, and register it with
+        # Hermes - so the whole local-AI stack is live from a single command.
+        # Composes the same primitives setup.sh uses; no parallel logic.
+        load_settings
+        if server_up; then
+            info "Already running on port $KILN_PORT."
+            auto_wire_hermes "$SCRIPT_DIR" && dim "  Registered with Hermes. Pick it in: hermes model"
+            exit 0
+        fi
+        # No model yet? Recommend one for this hardware and download it.
+        _gguf_count="$(find "${KILN_MODELS_DIR:-$HOME/models/kiln-server}" -name '*.gguf' 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$_gguf_count" -eq 0 ]; then
+            step "No model installed - recommending one for this machine"
+            "$SCRIPT_DIR/get-models.sh" --recommend || die "Model download failed."
+        fi
+        step "Starting the server"
+        # A generous timeout: the first load compiles CUDA kernels and can take
+        # minutes on a cold start; the 90s default is tuned for a warm reload.
+        KILN_START_TIMEOUT="${KILN_START_TIMEOUT:-240}" \
+            "$SCRIPT_DIR/start-server.sh" --background --no-browser || exit 1
+        # start-server --background returns once the process is spawned; confirm
+        # it is actually answering before we call this a success and wire Hermes.
+        if server_up; then
+            auto_wire_hermes "$SCRIPT_DIR" && dim "  Registered with Hermes. Pick it in: hermes model"
+        else
+            warn "Server started but is not answering yet. Check: kiln status / kiln logs"
+        fi
+        ;;
+
+    report)
+        # Bundle everything needed to diagnose a failure on hardware we never
+        # see, into ONE file the user can send by hand. Optional positional path
+        # (default: STATE_DIR/kiln-report.txt). No network, no upload - Kiln
+        # makes no outbound calls. The bundle is safe to share: hardware,
+        # version, settings keys (never values), and the structured error log.
+        # A leading-dash arg is a typo, not a path - reject it like any flag.
+        case "${1:-}" in -*) usage_die "'kiln report' takes an optional output path, not flags" ;; esac
+        load_settings
+        _out="${1:-$STATE_DIR/kiln-report.txt}"
+        {
+            echo "# Kiln diagnostic report"
+            echo "# Generated $(date -u +%Y-%m-%dT%H:%M:%SZ). Safe to share: no prompts, model output, or secrets."
+            echo ""
+            echo "## Version"
+            grep -m1 'PRISM_RELEASE\|PRISM_COMMIT' "$STATE_DIR/detect.env" 2>/dev/null || echo "detect.env: not found"
+            echo "kiln: $(git -C "$SCRIPT_DIR/.." describe --tags --always 2>/dev/null || echo unknown)"
+            echo ""
+            echo "## Hardware"
+            grep -E "^(OS|ARCH|GPU_NAME|GPU_VENDOR|VRAM_GB|RAM_GB|AVX512|BACKEND)=" "$STATE_DIR/detect.env" 2>/dev/null || echo "detect.env: not found"
+            echo ""
+            echo "## Settings (keys only - values omitted)"
+            grep -vE '^#|^$' "$SETTINGS_FILE" 2>/dev/null | cut -d= -f1 || echo "(no settings file)"
+            echo ""
+            echo "## Recent errors (last 50)"
+            if [ -f "$ERROR_LOG" ]; then
+                tail -50 "$ERROR_LOG"
+            else
+                echo "(no errors logged)"
+            fi
+        } > "$_out" 2>/dev/null
+        info "Report written: $_out"
+        dim "  Send this file to whoever is helping. It contains no prompts, model output, or secrets."
+        ;;
+
+    completions)
+        # Shell completion for the 18 commands. Generated from one list so it
+        # cannot drift from the dispatcher: adding a command and forgetting
+        # here is the failure mode this prevents.
+        _shell="${1:-bash}"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset report help"
+        case "$_shell" in
+            bash)
+                cat <<EOF
+# bash completion for kiln. Install with:
+#   kiln completions bash > ~/.local/share/bash-completion/completions/kiln
+_bonsai_completions() {
+    local cur="\${COMP_WORDS[COMP_CWORD]}"
+    if [ "\$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=( \$(compgen -W "$_cmds" -- "\$cur") )
+        return 0
+    fi
+    case "\${COMP_WORDS[1]}" in
+        set)     COMPREPLY=( \$(compgen -W "port ctx ngl kv threads models moe-cache-mib spec-type" -- "\$cur") ) ;;
+        logs)    COMPREPLY=( \$(compgen -W "-f" -- "\$cur") ) ;;
+        *)       COMPREPLY=( \$(compgen -W "\$(kiln models 2>/dev/null | grep -oE '[^ ]+\.gguf' | sed 's/\.gguf\$//')" -- "\$cur") ) ;;
+    esac
+    return 0
+}
+complete -F _bonsai_completions kiln
+EOF
+                ;;
+            zsh)
+                cat <<EOF
+#compdef kiln
+# zsh completion for kiln. Install by placing in a directory on your
+# \$fpath, e.g. ~/.zfunc/_bonsai, then: autoload -U compinit && compinit
+_bonsai() {
+    local -a commands
+    commands=($_cmds)
+    _arguments -C \\
+        '1: :->command' \\
+        '*: :->args'
+    case \$state in
+        command)
+            _describe 'command' commands
+            ;;
+        args)
+            case \$words[2] in
+                set)  _values 'setting' port ctx ngl kv threads models moe-cache-mib spec-type ;;
+                logs) _values 'flag' -f ;;
+            esac
+            ;;
+    esac
+}
+_bonsai "\$@"
+EOF
+                ;;
+            fish)
+                printf '# fish completion for kiln. Install with:\n#   kiln completions fish > ~/.config/fish/completions/kiln.fish\n'
+                for _c in $_cmds; do
+                    printf 'complete -c kiln -n "__fish_use_subcommand" -a "%s"\n' "$_c"
+                done
+                printf 'complete -c kiln -n "__fish_seen_subcommand_from set" -a "port ctx ngl kv threads models moe-cache-mib spec-type"\n'
+                printf 'complete -c kiln -n "__fish_seen_subcommand_from logs" -a "-f"\n'
+                ;;
+            *)
+                usage_die "Unknown shell '$_shell'. Try: bash, zsh, fish" ;;
+        esac
+        ;;
+
+    *)
+        # A typo has the user's intent in hand: name the nearest command
+        # instead of only pointing at help. Cheapest prevention for the
+        # commonest slip on a CLI.
+        #
+        # The match is edit-distance-based, not prefix-based: "speeed" is
+        # longer than "speed", so a prefix test would miss the most common
+        # typo shape. Uses the shared suggest_near/edit_distance so command
+        # and flag suggestions behave identically.
+        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up preset report help"
+        if _near="$(suggest_near "$CMD" $_all_cmds)"; then
+            usage_die "Unknown command '$CMD'. Did you mean '$_near'?
+       All commands: ./scripts/kiln help"
+        fi
+        usage_die "Unknown command '$CMD'. Try: ./scripts/kiln help"
+        ;;
+esac

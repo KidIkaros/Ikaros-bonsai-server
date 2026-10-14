@@ -1,6 +1,60 @@
 #!/usr/bin/env bash
-# Shared helpers for the Ikaros Bonsai server scripts.
+# Shared helpers for the Kiln local model server scripts.
 # Source this file: . "$(dirname "$0")/lib/common.sh"
+
+# ---------------------------------------------------------------------------
+# Back-compat: BONSAI_* / IKAROS_* -> KILN_*
+# ---------------------------------------------------------------------------
+
+# The project has been renamed twice: bonsai -> ikaros -> kiln. Every env var
+# is now KILN_*, but an existing install may still export IKAROS_* (from the
+# ikaros era) or BONSAI_* (from the original). Rather than sprinkle fallbacks
+# through every consumer, map both old spellings onto the new one here, once,
+# before anything reads them. Precedence, strongest first:
+#   an explicit KILN_X  >  IKAROS_X  >  BONSAI_X
+# This block is the single place an old spelling is recognised; the rest of
+# the codebase only knows KILN_*.
+#
+# The list is every var this file and the scripts consume, so a typo in a
+# future addition is caught by the test that checks the two spellings stay in
+# sync (tests/run.sh, "env var back-compat").
+_kiln_aliases=(
+    KILN_CALIB_TOKENS KILN_CTX KILN_DRAFT_MODEL KILN_EXTRA_ARGS
+    KILN_HOST KILN_KV_BIAS_OUT KILN_KV_TYPE KILN_KV_TYPE_K KILN_KV_TYPE_V
+    KILN_MODELS_DIR KILN_MOE_CACHE_MIB KILN_NGL KILN_PORT KILN_PREFIX
+    KILN_SPEC_DRAFT_N_MAX KILN_SPEC_DRAFT_P_MIN KILN_SPEC_STACK KILN_SPEC_TYPE
+    KILN_SLEEP_IDLE
+    KILN_SRC_DIR KILN_SRC_FORCE KILN_START_TIMEOUT KILN_STATE_DIR
+    KILN_TEST_SRC KILN_THREADS
+    KILN_FAKE_CPUINFO KILN_FAKE_LSPCI KILN_FAKE_NVIDIA_SMI KILN_FAKE_RAM_KB
+    KILN_FAKE_ROCM_GFX KILN_FAKE_ROCM_PREFIX KILN_FAKE_ROCM_VERSION
+    KILN_FAKE_UNAME_M KILN_FAKE_UNAME_S KILN_FAKE_VRAM_BYTES KILN_FAKE_VULKAN
+)
+for _new in "${_kiln_aliases[@]}"; do
+    _suffix="${_new#KILN_}"
+    # An explicit KILN_X always wins: skip entirely when it is already set to
+    # a non-empty value.
+    [ -z "${!_new:-}" ] || continue
+    # Resolve by precedence: IKAROS_X first, then BONSAI_X. Build the candidate
+    # variable NAME into a plain variable, then indirect-expand it. Do NOT write
+    # ${!IKAROS_${_suffix}:-} - bash rejects nesting an expansion inside the
+    # indirect operator as a "bad substitution" and the whole alias dies
+    # silently. Take the first old value that is non-empty.
+    _val=""
+    _name="IKAROS_${_suffix}"; _cand="${!_name:-}"
+    if [ -n "$_cand" ]; then
+        _val="$_cand"
+    else
+        _name="BONSAI_${_suffix}"; _cand="${!_name:-}"
+        [ -n "$_cand" ] && _val="$_cand"
+    fi
+    # Only alias a non-empty value: an empty old name must not create an empty
+    # KILN_X, which would defeat the ${KILN_X:-default} defaults below.
+    if [ -n "$_val" ]; then
+        export "$_new=$_val"
+    fi
+done
+unset _new _suffix _val _name _cand _kiln_aliases
 
 # ---------------------------------------------------------------------------
 # Paths and constants
@@ -13,18 +67,18 @@ unset _common_dir
 
 # Record which settings the caller supplied before any default is applied below.
 # Without this, load_settings cannot tell a deliberate override from a default,
-# and a one-off `BONSAI_CTX=... ./scripts/start-server.sh` would be ignored.
-_BONSAI_SETTINGS="BONSAI_PORT BONSAI_CTX BONSAI_NGL BONSAI_THREADS BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V BONSAI_MODELS_DIR BONSAI_DRAFT_MODEL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_SPEC_DRAFT_P_MIN"
-_BONSAI_FROM_ENV=""
-for _v in $_BONSAI_SETTINGS; do
-    if [ -n "${!_v+set}" ]; then _BONSAI_FROM_ENV="$_BONSAI_FROM_ENV $_v"; fi
+# and a one-off `KILN_CTX=... ./scripts/start-server.sh` would be ignored.
+_KILN_SETTINGS="KILN_PORT KILN_CTX KILN_NGL KILN_THREADS KILN_KV_TYPE KILN_KV_TYPE_K KILN_KV_TYPE_V KILN_MODELS_DIR KILN_DRAFT_MODEL KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX KILN_SPEC_DRAFT_P_MIN"
+_KILN_FROM_ENV=""
+for _v in $_KILN_SETTINGS; do
+    if [ -n "${!_v+set}" ]; then _KILN_FROM_ENV="$_KILN_FROM_ENV $_v"; fi
 done
 
-STATE_DIR="${BONSAI_STATE_DIR:-$REPO_ROOT/.state}"
+STATE_DIR="${KILN_STATE_DIR:-$REPO_ROOT/.state}"
 BIN_DIR="$REPO_ROOT/bin"
 # Exported so the per-script globals stay visible to shellcheck and to any
 # child process that needs them.
-MODELS_DIR="${BONSAI_MODELS_DIR:-$REPO_ROOT/models}"
+MODELS_DIR="${KILN_MODELS_DIR:-$REPO_ROOT/models}"
 export MODELS_DIR STATE_DIR BIN_DIR
 
 # Pinned upstream release. Bump PRISM_RELEASE and PRISM_COMMIT together.
@@ -41,45 +95,45 @@ PRISM_REPO="${PRISM_REPO:-PrismML-Eng/llama.cpp}"
 # BACKEND-dependent - Vulkan: n-max 2 (54.9 tok/s), ROCm: n-max 1 (51.2), both
 # well above the ~35 tok/s baseline. Below 1.0 the floor is disabled.
 #
-# BONSAI_SPEC_DRAFT_P_MIN is the draft probability floor (llama.cpp default
+# KILN_SPEC_DRAFT_P_MIN is the draft probability floor (llama.cpp default
 # 0.0 = disabled). Upstream measured +15% at n-max 16 / p-min 0.8 on a 5090
 # with Gemma4-31B (GH #25198), so the wiring exists for hardware where it
 # helps. MEASURED ON THIS CARD (RX 9060 XT, Oct 2026): it does NOT help -
 # lean n-max 4/8/16 with p-min 0.8 scored 38.5 / 37.1 / 32.7 vs 47.7 for
 # plain n-max 2. Deeper speculation hurts here and the floor does not rescue
 # it. Left at 0.0 by default; see docs/RESEARCH-2026-10.md section 2.
-BONSAI_SPEC_TYPE="${BONSAI_SPEC_TYPE:-}"
-BONSAI_SPEC_DRAFT_N_MAX="${BONSAI_SPEC_DRAFT_N_MAX:-1}"
-BONSAI_SPEC_DRAFT_P_MIN="${BONSAI_SPEC_DRAFT_P_MIN:-0.0}"
+KILN_SPEC_TYPE="${KILN_SPEC_TYPE:-}"
+KILN_SPEC_DRAFT_N_MAX="${KILN_SPEC_DRAFT_N_MAX:-1}"
+KILN_SPEC_DRAFT_P_MIN="${KILN_SPEC_DRAFT_P_MIN:-0.0}"
 
 # Optional draft model for speculative decoding. Must share the target's
 # vocabulary; the PrismML repos ship purpose-trained drafters named *-dspark-*.
 # A smaller model from the same family does NOT work: measured at no gain,
 # because its predictions are rejected too often. See docs/HARDWARE.md.
-BONSAI_DRAFT_MODEL="${BONSAI_DRAFT_MODEL:-}"
+KILN_DRAFT_MODEL="${KILN_DRAFT_MODEL:-}"
 
 # Server defaults. Hermes requires a context window of at least 64000 tokens.
-BONSAI_PORT="${BONSAI_PORT:-8081}"
-BONSAI_CTX="${BONSAI_CTX:-65536}"
-BONSAI_NGL="${BONSAI_NGL:-99}"
+KILN_PORT="${KILN_PORT:-8081}"
+KILN_CTX="${KILN_CTX:-65536}"
+KILN_NGL="${KILN_NGL:-99}"
 # Host threads for the CPU scheduler. Defaults to all logical cores. Under full
 # GPU offload this is measured as noise; on CPU-only and partial-offload builds
 # it is often the largest lever, so it is a setting rather than a constant.
-BONSAI_THREADS="${BONSAI_THREADS:-$(nproc 2>/dev/null || echo 4)}"
+KILN_THREADS="${KILN_THREADS:-$(nproc 2>/dev/null || echo 4)}"
 
 # KV cache quantization. At the 65536 context Hermes requires, the cache is the
 # single biggest consumer of VRAM and q8_0 halves it at negligible quality cost,
-# so it is the default. Set BONSAI_KV_TYPE=f16 to turn it off, or q4_0/iq4_nl
+# so it is the default. Set KILN_KV_TYPE=f16 to turn it off, or q4_0/iq4_nl
 # for roughly a quarter of the f16 size.
 #
-# BONSAI_KV_TYPE sets both halves; BONSAI_KV_TYPE_K / _V override one half.
+# KILN_KV_TYPE sets both halves; KILN_KV_TYPE_K / _V override one half.
 # They stay empty here so that --kv-type on the command line still composes.
 # Always resolve through kv_type_k / kv_type_v, never the raw variables.
 # "auto" picks f16 when the largest installed model still fits with it, and
 # q8_0 otherwise. Resolved at start time, so it adapts as models are added.
-BONSAI_KV_TYPE="${BONSAI_KV_TYPE:-auto}"
-BONSAI_KV_TYPE_K="${BONSAI_KV_TYPE_K:-}"
-BONSAI_KV_TYPE_V="${BONSAI_KV_TYPE_V:-}"
+KILN_KV_TYPE="${KILN_KV_TYPE:-auto}"
+KILN_KV_TYPE_K="${KILN_KV_TYPE_K:-}"
+KILN_KV_TYPE_V="${KILN_KV_TYPE_V:-}"
 
 # Types the pinned build accepts for --cache-type-k and --cache-type-v.
 # tests/run.sh asserts this matches what the installed binary reports, so it
@@ -96,8 +150,8 @@ kv_type_valid() {
 }
 
 # kv_type_k / kv_type_v - the resolved type for each half of the cache.
-kv_type_k() { printf '%s' "${BONSAI_KV_TYPE_K:-$BONSAI_KV_TYPE}"; }
-kv_type_v() { printf '%s' "${BONSAI_KV_TYPE_V:-$BONSAI_KV_TYPE}"; }
+kv_type_k() { printf '%s' "${KILN_KV_TYPE_K:-$KILN_KV_TYPE}"; }
+kv_type_v() { printf '%s' "${KILN_KV_TYPE_V:-$KILN_KV_TYPE}"; }
 
 # kv_type_effective - print the KV type that will actually be applied, or "f16"
 # when quantization is disabled on both halves.
@@ -118,10 +172,17 @@ kv_type_effective() {
 # ---------------------------------------------------------------------------
 
 # A single editable file holding the settings, shared by the interactive
-# launcher and the systemd unit. `./scripts/bonsai set` writes it, and the unit
+# launcher and the systemd unit. `./scripts/kiln set` writes it, and the unit
 # reads it through EnvironmentFile, so changing a setting never means
 # reinstalling anything.
 SETTINGS_FILE="$STATE_DIR/service.env"
+# ERROR_LOG - append-only structured log of every error/warning/diagnostic, so
+# a failure on hardware we never see (a friend's machine) is captured locally
+# and can be shared. One JSON object per line (JSONL). Never uploaded - Kiln
+# makes no network calls; `kiln report` bundles it for the user to send by
+# hand. Privacy-first: no model output, no prompts, no paths beyond the model
+# filename, no env values.
+ERROR_LOG="$STATE_DIR/errors.log"
 
 # load_settings - apply the settings file. A value the caller set in the
 # environment wins over the file, so a one-off override still works.
@@ -132,9 +193,9 @@ load_settings() {
         case "$_line" in ''|'#'*) continue ;; esac
         _key="${_line%%=*}"
         _val="${_line#*=}"
-        case "$_key" in BONSAI_*) ;; *) continue ;; esac
+        case "$_key" in KILN_*) ;; *) continue ;; esac
         _skip=0
-        for _v in $_BONSAI_FROM_ENV; do
+        for _v in $_KILN_FROM_ENV; do
             [ "$_v" = "$_key" ] && _skip=1
         done
         [ "$_skip" = 1 ] && continue
@@ -143,7 +204,7 @@ load_settings() {
 }
 
 # ---------------------------------------------------------------------------
-# Settings file helpers (used by `bonsai set` and `bonsai apply`)
+# Settings file helpers (used by `kiln set` and `kiln apply`)
 # ---------------------------------------------------------------------------
 
 # settings_set KEY VALUE - write one KEY=VALUE into the settings file,
@@ -176,34 +237,34 @@ settings_unset() {
 TUNE_BEST_FILE="$STATE_DIR/tune-best.env"
 
 # write_tune_best ENVSTRING BACKEND - record the winning config of a
-# `bonsai tune` run. ENVSTRING is the variant's KEY=VALUE settings (spec,
+# `kiln tune` run. ENVSTRING is the variant's KEY=VALUE settings (spec,
 # n-max, ubatch, kv type). Backended-tagged so a later run on a different GPU
 # does not apply a config measured under another backend. This is a record,
-# not an automatic apply; use `apply_tune_best` (or `./scripts/bonsai apply`).
+# not an automatic apply; use `apply_tune_best` (or `./scripts/kiln apply`).
 write_tune_best() {
     local _env="$1" _backend="$2" _k
     mkdir -p "$STATE_DIR"
     {
-        printf '# Winner of the last `bonsai tune` run. Backended-tagged.\n'
-        printf '# Apply safely with:  ./scripts/bonsai apply\n'
-        printf 'BONSAI_TUNED_BACKEND=%s\n' "$_backend"
-        printf 'BONSAI_TUNED_AT=%s\n' "$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo now)"
+        printf '# Winner of the last `kiln tune` run. Backended-tagged.\n'
+        printf '# Apply safely with:  ./scripts/kiln apply\n'
+        printf 'KILN_TUNED_BACKEND=%s\n' "$_backend"
+        printf 'KILN_TUNED_AT=%s\n' "$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo now)"
         # Emit each KEY=VALUE the winner used. Start from a clean slate so
-        # inherited ambient values (e.g. the BONSAI_THREADS default) are not
+        # inherited ambient values (e.g. the KILN_THREADS default) are not
         # recorded as part of the winner. Then parse ENVSTRING with eval so
-        # quoted values like BONSAI_EXTRA_ARGS="--ubatch-size 256" come through.
-        ( unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS 2>/dev/null || true
+        # quoted values like KILN_EXTRA_ARGS="--ubatch-size 256" come through.
+        ( unset KILN_KV_TYPE KILN_KV_TYPE_K KILN_KV_TYPE_V \
+                KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX KILN_NGL \
+                KILN_CTX KILN_EXTRA_ARGS KILN_THREADS 2>/dev/null || true
             eval "$_env" 2>/dev/null || true
-            # BONSAI_CTX is machine- and model-specific: the tune measured the
+            # KILN_CTX is machine- and model-specific: the tune measured the
             # winner AT this context, so applying it at another silently
             # changes what was measured. CONTEXT is what the tune actually ran
-            # at (it can differ from the ambient BONSAI_CTX via --context).
-            [ -n "${CONTEXT:-}" ] && BONSAI_CTX="$CONTEXT"
-            for _k in BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-                      BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-                      BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS; do
+            # at (it can differ from the ambient KILN_CTX via --context).
+            [ -n "${CONTEXT:-}" ] && KILN_CTX="$CONTEXT"
+            for _k in KILN_KV_TYPE KILN_KV_TYPE_K KILN_KV_TYPE_V \
+                      KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX KILN_NGL \
+                      KILN_CTX KILN_EXTRA_ARGS KILN_THREADS; do
                 [ -n "${!_k:-}" ] && printf '%s=%s\n' "$_k" "${!_k:-}"
             done
             : # ensure the subshell returns success even if the last key was unset
@@ -212,24 +273,24 @@ write_tune_best() {
 }
 
 # apply_tune_best - project the recorded winner onto the live settings file.
-# Only machine-level knobs safe in router mode are persisted: BONSAI_THREADS
-# and BONSAI_EXTRA_ARGS (ubatch). The KV cache type is left to `auto` (it is
+# Only machine-level knobs safe in router mode are persisted: KILN_THREADS
+# and KILN_EXTRA_ARGS (ubatch). The KV cache type is left to `auto` (it is
 # model-size-dependent and must re-decide per model). Speculative-decode
 # settings are applied only when the backend matches the one the winner was
 # measured under - draft efficiency is backend-specific, and a cross-backend
 # apply would be slower, not faster.
 apply_tune_best() {
-    [ -f "$TUNE_BEST_FILE" ] || { warn "No tune result recorded. Run: ./scripts/bonsai tune"; return 1; }
+    [ -f "$TUNE_BEST_FILE" ] || { warn "No tune result recorded. Run: ./scripts/kiln tune"; return 1; }
     [ -n "${BACKEND:-}" ]     || { warn "No backend loaded. Run: ./scripts/detect.sh"; return 1; }
     # Clear ambient defaults first, so only the winner's recorded keys survive
-    # - e.g. BONSAI_THREADS is always set by common.sh, but a winner that did
+    # - e.g. KILN_THREADS is always set by common.sh, but a winner that did
     # not measure threads must not drag the default into the settings file.
-    unset BONSAI_KV_TYPE BONSAI_KV_TYPE_K BONSAI_KV_TYPE_V \
-          BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX BONSAI_NGL \
-          BONSAI_CTX BONSAI_EXTRA_ARGS BONSAI_THREADS
+    unset KILN_KV_TYPE KILN_KV_TYPE_K KILN_KV_TYPE_V \
+          KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX KILN_NGL \
+          KILN_CTX KILN_EXTRA_ARGS KILN_THREADS
     # shellcheck source=/dev/null
     . "$TUNE_BEST_FILE"
-    local _tuned_backend="${BONSAI_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
+    local _tuned_backend="${KILN_TUNED_BACKEND:-}" _applied=0 _skip_spec=0
     if [ -n "$_tuned_backend" ] && [ "$_tuned_backend" != "$BACKEND" ]; then
         _skip_spec=1
         warn "Tune result was measured on backend '$_tuned_backend' but this machine is '$BACKEND'."
@@ -238,37 +299,37 @@ apply_tune_best() {
     # Safe, machine-level knobs. The offload split (NGL) and thread count are
     # machine-specific and backend-agnostic in the same way threads are, so they
     # are applied even on a cross-backend apply (only the spec-type is gated).
-    [ -n "${BONSAI_THREADS:-}" ]     && { settings_set BONSAI_THREADS "$BONSAI_THREADS"; _applied=1; }
-    [ -n "${BONSAI_EXTRA_ARGS:-}" ]  && { settings_set BONSAI_EXTRA_ARGS "$BONSAI_EXTRA_ARGS"; _applied=1; }
-    [ -n "${BONSAI_NGL:-}" ]         && { settings_set BONSAI_NGL "$BONSAI_NGL"; _applied=1; }
+    [ -n "${KILN_THREADS:-}" ]     && { settings_set KILN_THREADS "$KILN_THREADS"; _applied=1; }
+    [ -n "${KILN_EXTRA_ARGS:-}" ]  && { settings_set KILN_EXTRA_ARGS "$KILN_EXTRA_ARGS"; _applied=1; }
+    [ -n "${KILN_NGL:-}" ]         && { settings_set KILN_NGL "$KILN_NGL"; _applied=1; }
     # Context: the tune measured the winner AT this context, so it belongs to
     # the winner. Without this the apply silently reverted to the 65536 default
     # and a model tuned at 8192 OOM'd on its next start.
-    [ -n "${BONSAI_CTX:-}" ]         && { settings_set BONSAI_CTX "$BONSAI_CTX"; _applied=1; }
+    [ -n "${KILN_CTX:-}" ]         && { settings_set KILN_CTX "$KILN_CTX"; _applied=1; }
     # Speculative settings: backend-specific. Only apply when the backend
     # matches the one the winner was measured under; otherwise drop any stale
     # value so a config tuned for Vulkan, say, does not end up running on ROCm
     # (where draft-n-max 2 is slower than baseline).
     if [ "$_skip_spec" = 1 ]; then
-        if [ -n "${BONSAI_SPEC_TYPE:-}" ] || [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ]; then
-            settings_unset BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        if [ -n "${KILN_SPEC_TYPE:-}" ] || [ -n "${KILN_SPEC_DRAFT_N_MAX:-}" ]; then
+            settings_unset KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX
             _did_specenv=""
-            [ -n "${BONSAI_SPEC_TYPE:-}" ] && _did_specenv="BONSAI_SPEC_TYPE=${BONSAI_SPEC_TYPE}"
-            [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && _did_specenv="${_did_specenv:+$_did_specenv }BONSAI_SPEC_DRAFT_N_MAX=${BONSAI_SPEC_DRAFT_N_MAX}"
+            [ -n "${KILN_SPEC_TYPE:-}" ] && _did_specenv="KILN_SPEC_TYPE=${KILN_SPEC_TYPE}"
+            [ -n "${KILN_SPEC_DRAFT_N_MAX:-}" ] && _did_specenv="${_did_specenv:+$_did_specenv }KILN_SPEC_DRAFT_N_MAX=${KILN_SPEC_DRAFT_N_MAX}"
             dim "  To use it on this backend anyway (MTP models only), run:"
             dim "    $_did_specenv ./scripts/start-server.sh"
         fi
     else
-        [ -n "${BONSAI_SPEC_TYPE:-}" ] && { settings_set BONSAI_SPEC_TYPE "$BONSAI_SPEC_TYPE"; _applied=1; }
-        [ -n "${BONSAI_SPEC_DRAFT_N_MAX:-}" ] && { settings_set BONSAI_SPEC_DRAFT_N_MAX "$BONSAI_SPEC_DRAFT_N_MAX"; _applied=1; }
+        [ -n "${KILN_SPEC_TYPE:-}" ] && { settings_set KILN_SPEC_TYPE "$KILN_SPEC_TYPE"; _applied=1; }
+        [ -n "${KILN_SPEC_DRAFT_N_MAX:-}" ] && { settings_set KILN_SPEC_DRAFT_N_MAX "$KILN_SPEC_DRAFT_N_MAX"; _applied=1; }
     fi
     if [ "$_applied" = 0 ]; then
         # Winner was the default; make sure no stale tuned values linger.
-        settings_unset BONSAI_THREADS BONSAI_EXTRA_ARGS BONSAI_NGL BONSAI_SPEC_TYPE BONSAI_SPEC_DRAFT_N_MAX
+        settings_unset KILN_THREADS KILN_EXTRA_ARGS KILN_NGL KILN_SPEC_TYPE KILN_SPEC_DRAFT_N_MAX
         info "Tune winner was the default config; nothing to apply."
     else
         info "Applied the tune winner to $SETTINGS_FILE."
-        dim "  Restart to apply: ./scripts/bonsai restart"
+        dim "  Restart to apply: ./scripts/kiln restart"
     fi
     return 0
 }
@@ -277,22 +338,166 @@ apply_tune_best() {
 # Output
 # ---------------------------------------------------------------------------
 
-if [ -t 1 ]; then
-    C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
-    C_CYAN='\033[36m'; C_DIM='\033[2m'; C_RESET='\033[0m'
+# The Kiln palette (see kiln-brandkit.html), as 24-bit truecolor ANSI so it
+# matches the brand exactly on any modern terminal. Colors are enabled only
+# when stdout is a TTY and NO_COLOR is unset/empty (the no-color.org
+# convention), so pipes, redirects and CI stay clean. When disabled every
+# variable is empty, so the same printf calls emit plain text with no escapes
+# at all - no legacy 16-color fallback, because a wrong color is worse than
+# none. The helpers keep writing to stderr so stdout stays machine-readable.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    # truecolor: Ash-Black bg, Ember, Hot, Clay, Ceramic, Ash
+    C_RESET='\033[0m'
+    C_EMBER='\033[38;2;240;164;40m'   # #f0a428 primary accent — headers, speed
+    C_HOT='\033[38;2;226;85;43m'      # #e2552b warnings, heat
+    C_CLAY='\033[38;2;201;162;122m'   # #c9a27a secondary / neutral emphasis
+    C_CREAM='\033[38;2;242;236;225m'  # #f2ece1 primary text
+    C_ASH='\033[38;2;168;158;146m'    # #a89e92 dim metadata
+    C_DIM='\033[2m'                   # true dim (de-emphasised text)
+    C_OK='\033[38;2;143;191;106m'     # fired-green: a real "good" signal
+    # Back-compat names: the semantic role each old color played.
+    C_GREEN="$C_OK"; C_CYAN="$C_EMBER"; C_YELLOW="$C_HOT"; C_RED="$C_HOT"
 else
-    C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_DIM=''; C_RESET=''
+    C_RESET=''; C_EMBER=''; C_HOT=''; C_CLAY=''; C_CREAM=''; C_ASH=''
+    C_DIM=''; C_OK=''; C_GREEN=''; C_CYAN=''; C_YELLOW=''; C_RED=''
 fi
 
 # All diagnostics go to stderr, so stdout stays clean for machine-readable
 # output such as detect.sh --json.
-info() { printf "${C_GREEN}[OK]${C_RESET}   %s\n" "$*" >&2; }
-warn() { printf "${C_YELLOW}[WARN]${C_RESET} %s\n" "$*" >&2; }
-err()  { printf "${C_RED}[ERR]${C_RESET}  %s\n" "$*" >&2; }
-step() { printf "\n${C_CYAN}==> %s${C_RESET}\n" "$*" >&2; }
+info() { printf "${C_OK}[OK]${C_RESET}   %s\n" "$*" >&2; }
+warn() { err_log WARN "$*"; printf "${C_HOT}[WARN]${C_RESET} %s\n" "$*" >&2; }
+err()  { err_log ERROR "$*"; printf "${C_HOT}[ERR]${C_RESET}  %s\n" "$*" >&2; }
+step() { printf "\n${C_EMBER}==> %s${C_RESET}\n" "$*" >&2; }
 dim()  { printf "${C_DIM}%s${C_RESET}\n" "$*" >&2; }
 
+# err_log LEVEL MESSAGE - append one structured record to ERROR_LOG. JSONL so
+# it is trivially parseable. Best-effort and silent on any failure: this runs
+# on the error path, so a logger that cannot write must never mask or replace
+# the error it is recording (hence the trailing `|| true` and 2>/dev/null).
+# Records only the level, an ISO timestamp, the command, the backend, and the
+# message - never model output, prompts, credentials, or absolute paths.
+err_log() {
+    local _lvl="$1" _msg="$2" _ts _cmd
+    _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    _cmd="$(basename "${0:-kiln}" 2>/dev/null || echo kiln)"
+    # Minimal JSON escaping: backslash and double-quote are the only chars that
+    # break a JSON string; newlines collapse to spaces so one record stays one
+    # line.
+    _msg="${_msg//\\/\\\\}"
+    _msg="${_msg//\"/\\\"}"
+    _msg="${_msg//$'\n'/ }"
+    printf '{"ts":"%s","level":"%s","cmd":"%s","backend":"%s","msg":"%s"}\n' \
+        "$_ts" "$_lvl" "$_cmd" "${BACKEND:-unknown}" "$_msg" \
+        >> "$ERROR_LOG" 2>/dev/null || true
+}
+
+# kiln_logo - the wordmark, drawn in box characters so it needs no font and
+# degrades to plain text when color is off. The glyphs come from a verified
+# 5-wide block font (K's diagonal, I's serifs, L's foot, N's diagonal are each
+# checked by construction, not by eye). Printed to stderr.
+kiln_logo() {
+    printf "${C_EMBER} █  █  █████  █      █   █${C_RESET}\n" >&2
+    printf "${C_EMBER} █ █     █    █      ██  █${C_RESET}\n" >&2
+    printf "${C_EMBER} ██      █    █      █ █ █${C_RESET}\n" >&2
+    printf "${C_EMBER} █ █   █████  █████  █   █${C_RESET}\n" >&2
+    printf "${C_ASH} local model server · fired hot${C_RESET}\n" >&2
+}
+
 die() { err "$*"; exit 1; }
+
+# usage_die - like die, but exit 2: the conventional code for a usage error
+# (bad flag, bad value, wrong argument count), distinct from 1, a runtime
+# failure (no server, no model, out of memory). A script wrapping kiln can
+# now tell "you called me wrong" from "the world is wrong" without parsing
+# stderr. Only the argument-validation paths use this; a runtime failure keeps
+# exit 1, because that is what it is.
+usage_die() { err "$*"; exit 2; }
+
+# ---------------------------------------------------------------------------
+# Argument validation (shared by the dispatcher and every subcommand)
+# ---------------------------------------------------------------------------
+
+# edit_distance A B - print the edit distance between A and B, capped at 99.
+# Substitutions, one insertion and one deletion all count as 1; anything more
+# than 1 prints a number > 1 so callers can treat "> 1" as "not a typo". This is
+# the single distance function the command and flag suggesters both use, so a
+# "did you mean" behaves identically at both layers.
+edit_distance() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        la = length(a); lb = length(b)
+        if (la > lb + 1 || lb > la + 1) { print 99; exit }
+        if (la == lb) {
+            d = 0
+            for (i = 1; i <= la; i++)
+                if (substr(a, i, 1) != substr(b, i, 1)) d++
+            print d; exit
+        }
+        # One apart: one edit is enough iff every character of the shorter
+        # appears in order in the longer (subsequence test).
+        if (la < lb) { s = a; l = b } else { s = b; l = a }
+        j = 1; skips = 0
+        for (i = 1; i <= length(l); i++) {
+            if (j <= length(s) && substr(l, i, 1) == substr(s, j, 1)) j++
+            else skips++
+        }
+        print skips
+    }'
+}
+
+# suggest_near WORD CANDIDATES... - print the first candidate within edit
+# distance 1 of WORD, or return 1. Shared by command and flag suggestion.
+suggest_near() {
+    local _word="$1"; shift
+    local _c _d
+    for _c in "$@"; do
+        _d="$(edit_distance "$_word" "$_c")"
+        [ "$_d" -le 1 ] && { printf '%s' "$_c"; return 0; }
+    done
+    return 1
+}
+
+# reject_any_flags CONTEXT - usage_die (exit 2) if ANY argument is a flag.
+# For subcommands that take no flags at all (status, show, models, ...): a
+# stray flag is always a mistake, and there is nothing to suggest it toward.
+# Separate from reject_unknown_flags because that one needs an allowed list to
+# match against; here the allowed set is empty, so any "-..." is unknown.
+reject_any_flags() {
+    local _ctx="$1"; shift
+    local _a
+    for _a in "$@"; do
+        case "$_a" in
+            -*) usage_die "'kiln $_ctx' takes no flags, got '$_a'. Try: ./scripts/kiln help" ;;
+        esac
+    done
+}
+
+# reject_unknown_flags CONTEXT ALLOWED_STR -- ARGS... - usage_die (exit 2) if
+# any of ARGS is a flag not in ALLOWED_STR (a space-separated list). The `--`
+# separates the fixed allowed set from the user's arguments, so the two can
+# never be confused (an earlier single-stream form let a user's bad flag land
+# in the allowed list and pass itself). This is the missing balancing loop:
+# without it a subcommand silently accepts and ignores a mistyped flag
+# (`kiln start --backgroud` runs as if absent) - the worst failure for a new
+# user, because it looks like it worked. A did-you-mean from the shared
+# distance function catches a flag typo exactly like a command typo.
+reject_unknown_flags() {
+    local _ctx="$1" _allowed="$2"; shift 2
+    [ "${1:-}" = "--" ] && shift
+    local _a _near
+    for _a in "$@"; do
+        case "$_a" in
+            -*) ;;
+            *) continue ;;
+        esac
+        # Already-allowed flags pass through untouched.
+        case " $_allowed " in *" $_a "*) continue ;; esac
+        # shellcheck disable=SC2086
+        if _near="$(suggest_near "$_a" $_allowed)"; then
+            usage_die "Unknown flag '$_a' for 'kiln $_ctx'. Did you mean '$_near'?"
+        fi
+        usage_die "Unknown flag '$_a' for 'kiln $_ctx'. Try: ./scripts/kiln help"
+    done
+}
 
 # ---------------------------------------------------------------------------
 # Input
@@ -496,38 +701,185 @@ coverage_values() {
     awk -F'\t' -v d="$1" '$1 == d { print $2 }' "$COVERAGE_CACHE"
 }
 
-# speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] - measured tokens per second.
+# speed_get / speed_set / speed_rows - the measured speed cache.
 #
-# Keyed by backend and release as well as model and cache type. A speed measured
-# on one backend does not transfer to another: the same model measured 36.1 on
-# ROCm and 30.4 on Vulkan. Without the backend in the key, switching backends
-# reported the old number as if it were current.
+# Keyed by backend and release as well as model and cache type: a speed measured
+# on one backend does not transfer to another (the same model measured 36.1 on
+# ROCm and 30.4 on Vulkan), and without the backend in the key, switching
+# backends reported the old number as if it were current.
+#
+# speed_get MODEL CELLS TYPE [BACKEND] [RELEASE] [NGL] - measured tokens per second.
+# With NGL given, the row measured at that offload level; without it, the first
+# matching row wins, which is how this reader has always behaved.
 speed_get() {
     [ -f "$SPEED_CACHE" ] || return 1
-    local _key _b _rel
+    local _key _b _rel _ngl
     _key="$(basename "$1")"
     _b="${4:-${BACKEND:-unknown}}"
     _rel="${5:-${PRISM_RELEASE:-unknown}}"
-    awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
-        '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    _ngl="${6:-}"
+    if [ -n "$_ngl" ]; then
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" -v g="$_ngl" \
+            '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r && $7 == g { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    else
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
+            '$1 == k && $2 == c && $3 == t && $4 == b && $5 == r { print $6; found=1 } END { exit !found }' "$SPEED_CACHE"
+    fi
 }
 
-# speed_set MODEL CELLS TYPE TPS [BACKEND] [RELEASE] - record a measurement.
+# speed_set MODEL CELLS TYPE TPS [BACKEND] [RELEASE] [NGL] [ACCEPTANCE] - record a measurement.
+# The optional NGL records the offload level the measurement was taken at: the
+# sweep measures partial offloads, and a tok/s number is meaningless for
+# reproduction without the split that produced it. NGL is part of the key, so
+# the same model at a different split is a different row, not a replacement.
+# ACCEPTANCE is the draft acceptance rate when the run used a spec type, empty
+# otherwise - a speed row without its acceptance is not reproducible advice,
+# since the same tok/s with 0.05 acceptance means the drafts are not landing.
+# Rows written before these columns existed stay valid - readers take what
+# columns they need.
 speed_set() {
     mkdir -p "$STATE_DIR"
-    local _key _tmp _b _rel
+    local _key _tmp _b _rel _ngl _acc
     _key="$(basename "$1")"
     _b="${5:-${BACKEND:-unknown}}"
     _rel="${6:-${PRISM_RELEASE:-unknown}}"
+    _ngl="${7:-}"
+    _acc="${8:-}"
     _tmp="$SPEED_CACHE.tmp"
     if [ -f "$SPEED_CACHE" ]; then
-        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" \
-            '!($1 == k && $2 == c && $3 == t && $4 == b && $5 == r)' "$SPEED_CACHE" > "$_tmp"
+        # $7 and $8 (offload level, acceptance) are empty in rows written
+        # before the columns existed, so empty values match them and set
+        # values do not.
+        awk -F'\t' -v k="$_key" -v c="$2" -v t="$3" -v b="$_b" -v r="$_rel" -v g="$_ngl" \
+            '!($1 == k && $2 == c && $3 == t && $4 == b && $5 == r && $7 == g)' "$SPEED_CACHE" > "$_tmp"
     else
         : > "$_tmp"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_key" "$2" "$3" "$_b" "$_rel" "$4" >> "$_tmp"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_key" "$2" "$3" "$_b" "$_rel" "$4" "$_ngl" "$_acc" >> "$_tmp"
     mv "$_tmp" "$SPEED_CACHE"
+}
+
+# speed_rows BACKEND [RELEASE] - the measured rows for one backend and release,
+# exactly as they sit in the cache. Columns: model, cells, type, backend,
+# release, tok/s, offload level, draft acceptance (both empty when not
+# recorded). Ranking is the caller's job, so the cache stays a plain record
+# with one writer per fact.
+speed_rows() {
+    [ -f "$SPEED_CACHE" ] || return 0
+    local _b="$1" _r="${2:-${PRISM_RELEASE:-unknown}}"
+    awk -F'\t' -v b="$_b" -v r="$_r" '$4 == b && $5 == r' "$SPEED_CACHE"
+}
+
+# ---------------------------------------------------------------------------
+# Speculative decoding selection (speed-first)
+# ---------------------------------------------------------------------------
+
+# MTP speculative decoding is the third-biggest speed lever: +23-33% on
+# Turing/Ampere with a grafted head, +15% on Vulkan at n-max 2, +6% on ROCm at
+# n-max 1. A *-mtp.gguf carries the head inside the file, so it needs no second
+# file and is on by default whenever the installed models carry it.
+
+# file_has_mtp_head FILE - succeed when the filename marks a grafted MTP head.
+# "lean" files (the embedding weights stripped, what fits an 8 GB card) carry
+# the head just as the fat file does, so both match.
+file_has_mtp_head() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        *mtp*) return 0 ;;
+    esac
+    return 1
+}
+
+# spec_nmax_for BACKEND - tokens the MTP head should draft on this backend.
+# The window is backend-specific and measured, not assumed: Vulkan pays for a
+# wider window (54.9 tok/s at n-max 2 against 47.7 at 1, RX 9060 XT), while
+# ROCm and CUDA do not - n-max 2 measured slower than the baseline there.
+# CPU prints 0, which callers must read as "do not enable": without a GPU the
+# verification pass costs more than the drafts save.
+spec_nmax_for() {
+    case "$1" in
+        vulkan)    printf '2' ;;
+        rocm|cuda) printf '1' ;;
+        *)         printf '0' ;;
+    esac
+}
+
+# bench_row CARD BACKEND RELEASE FILE NGL KV CTX SPEC TPS - one sweeps/-style
+# markdown row. Every number names its card, build and file so it can be
+# reproduced or contested; printed, never asserted.
+bench_row() {
+    printf '| %s | %s | %s | %s | ngl %s | %s KV | %s | %s | %s tok/s |\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+}
+
+# ---------------------------------------------------------------------------
+# Draft acceptance (spec-decode effectiveness)
+# ---------------------------------------------------------------------------
+
+# log_draft_acceptance LOG - the draft acceptance rate from a llama-server log,
+# as a plain number, or nothing when the run drafted nothing.
+#
+# The number decides whether a spec type is doing anything: below ~0.10 the
+# drafts are being rejected often enough that the verify passes cost more than
+# the drafts save (community heuristic, PR #19164 comment), and on the PrismML
+# ternary models n-gram spec reports no draft line at all (issue #203), which
+# is the signal to leave it off rather than assume it worked.
+log_draft_acceptance() {
+    [ -f "$1" ] || return 1
+    # llama-server prints "draft acceptance rate = 0.70312 (90 accepted / 128
+    # generated)" once per completed generation. Take the last one: it covers
+    # the whole response, where the first would cover only the opening tokens.
+    grep -aoE 'draft acceptance rate = [0-9.]+' "$1" 2>/dev/null |
+        grep -oE '[0-9.]+' | tail -1
+}
+
+# acceptance_verdict RATE - how well a spec type is paying. The thresholds are
+# the community rule of thumb, not a measured cliff on this hardware: 0.10 is
+# where PR #19164 says a speedup starts, so anything under it is reported as
+# weak rather than silently treated as fine. An empty rate means the run used
+# no spec type at all (or the build prints no draft line, which is what the
+# PrismML ternary models do with n-gram spec) - "no drafts", distinct from a
+# measured 0.05, because one says "nothing was attempted" and the other says
+# "the drafts are being rejected".
+acceptance_verdict() {
+    local _r="${1:-}"
+    [ -n "$_r" ] || { printf 'no drafts'; return 0; }
+    if awk -v r="$_r" 'BEGIN { exit !(r >= 0.10) }'; then
+        printf 'works'
+    else
+        printf 'weak'
+    fi
+}
+
+# json_escape STRING - escape a string for embedding in a JSON double-quoted
+# scalar. GPU names carry brackets and parens ("TU106M [GeForce RTX 2070 ...]"),
+# and a model path can carry a backslash, so this is not optional. Only the
+# characters JSON requires escaped in a string are touched; everything else
+# passes through.
+json_escape() {
+    printf '%s' "${1:-}" |
+        sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' |
+        tr -d '\000-\010\013\014\016-\037'
+}
+
+# first_model_id URL - the id of the first model a llama-server reports, or
+# nothing when it reports none. One place parses /v1/models: router mode
+# rejects a request that does not name a model, so every caller that talks to
+# the API needs this and should not each re-derive the parse.
+#
+# The response is one JSON line with every model in it, so the match must not
+# be greedy: `.*"id":"` before the capture would match the LAST id on the line
+# and report a model the caller did not pick. Strip everything through the
+# first marker instead.
+first_model_id() {
+    local _url="${1%/}"
+    command -v curl >/dev/null 2>&1 || return 1
+    # llama.cpp answers /v1/models as one line holding every model. A greedy
+    # `.*"id":"` in sed captures the LAST id on that line, so a server with
+    # two models would report the wrong one. Split the objects apart first,
+    # one per line, then take the first id found.
+    curl -s --max-time 5 "$_url/v1/models" 2>/dev/null |
+        tr ',' '\n' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1
 }
 
 # kv_placement LAYERS NGL WEIGHTS_GB KV_GB - print "VRAM RAM" in GB.
@@ -600,7 +952,7 @@ kv_type_auto_choice() {
     _w_gb="$(awk -v b="$(model_size_bytes "$_largest")" 'BEGIN { printf "%.2f", b/1073741824 }')"
 
     for _t in f16 q8_0; do
-        _kv_gb="$(kv_mib "$_largest" "$BONSAI_CTX" "$_t" 2>/dev/null |
+        _kv_gb="$(kv_mib "$_largest" "$KILN_CTX" "$_t" 2>/dev/null |
             awk '{ printf "%.2f", $1/1024 }')"
         [ -n "$_kv_gb" ] || continue
         if awk -v w="$_w_gb" -v k="$_kv_gb" -v b="$_budget" 'BEGIN { exit !(w + k <= b) }'; then
@@ -629,8 +981,8 @@ kv_type_auto_reason() {
 # Any entry point that needs the effective type must call this first, otherwise
 # it sees the literal string "auto" and fails validation.
 kv_type_resolve() {
-    [ "${BONSAI_KV_TYPE:-}" = "auto" ] || return 0
-    BONSAI_KV_TYPE="$(kv_type_auto)"
+    [ "${KILN_KV_TYPE:-}" = "auto" ] || return 0
+    KILN_KV_TYPE="$(kv_type_auto)"
 }
 
 # kv_budget_gb - memory the models may use, with headroom held back.
@@ -693,15 +1045,24 @@ detect_is_stale() {
 # hf_tree_raw REPO [REVISION] - print the raw HF tree JSON, or fail.
 hf_tree_raw() {
     local _repo="$1" _rev="${2:-main}"
-    local -a _auth=()
-    _auth=()
-    [ -n "${HF_TOKEN:-}" ] && _auth=(-H "Authorization: Bearer $HF_TOKEN")
+    local _url="https://huggingface.co/api/models/$_repo/tree/$_rev"
+
+    # Build the argument list, then append the URL last. The previous form
+    # passed a literal "" positional when no HF_TOKEN was set, and curl takes
+    # the first positional as its URL target - so the real URL was ignored and
+    # every tokenless call failed with rc 22. Appending the URL after the
+    # (possibly empty) list keeps it in the right slot either way.
+    local -a _args=()
+    [ -n "${HF_TOKEN:-}" ] && _args+=(-H "Authorization: Bearer ${HF_TOKEN}")
 
     if command -v curl >/dev/null 2>&1; then
-        curl -sf "${_auth[@]}" "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
-    else
-        wget -qO- --header="Authorization: Bearer ${HF_TOKEN:-}" \
-             "https://huggingface.co/api/models/$_repo/tree/$_rev" 2>/dev/null
+        curl -sf "${_args[@]}" "$_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        if [ -n "${HF_TOKEN:-}" ]; then
+            wget -qO- --header="Authorization: Bearer ${HF_TOKEN}" "$_url" 2>/dev/null
+        else
+            wget -qO- "$_url" 2>/dev/null
+        fi
     fi
 }
 
@@ -811,4 +1172,59 @@ quant_needs_vulkan_warning() {
     local _f
     _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$_f" in *pq2_0*|*ptq1_0*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------
+# Hermes auto-wire (shared by setup.sh, kiln start, kiln up)
+# ---------------------------------------------------------------------------
+
+# auto_wire_hermes SCRIPTS_DIR - register this running server as a Hermes
+# provider, so it appears in `hermes model` and Hermes Desktop's provider list.
+# This is the single primitive the onboarding flow (setup.sh), the
+# returning-user flow (kiln start), and the magic command (kiln up) all compose
+# - one implementation, no drift between them. SCRIPTS_DIR is passed in because
+# common.sh is sourced and cannot self-locate; every caller knows it.
+#
+# Behaviour, deliberately conservative:
+#   - Registers the provider (api, name, default_model) but does NOT force it
+#     as Hermes's active provider - the user still picks it in `hermes model`,
+#     exactly like any other provider. (--make-default stays available in
+#     hermes-wire.sh for anyone who wants it.)
+#   - Only runs when the `hermes` CLI is on PATH; otherwise it is a silent
+#     no-op, so a machine without Hermes is never broken by this.
+#   - Idempotent: re-running just re-affirms the same three keys.
+#   - Never touches config without hermes-wire.sh's own timestamped backup.
+#
+# Returns 0 always: a failed wire must never fail the caller (a running server
+# is the product; Hermes registration is a convenience on top).
+auto_wire_hermes() {
+    local _scripts="$1"
+    command -v hermes >/dev/null 2>&1 || return 0
+    [ -x "$_scripts/hermes-wire.sh" ] || return 0
+    # hermes-wire reads the model id from the running server; it refuses
+    # cleanly if nothing is up, which is fine - we only call this post-start.
+    "$_scripts/hermes-wire.sh" >/dev/null 2>&1 || true
+    return 0
+}
+
+# model_reason FILE VRAM_GB - one line explaining WHY this model fits this
+# machine: its parameter count, its quantisation, and the VRAM headroom. A
+# first-time user should see "8B params, PQ2_0 quant (2.1 bpw) - fits your 8 GB
+# with room for a 64K context", not a bare filename they cannot interpret.
+# Param count comes from the name (Bonsai-8B, Ternary-Bonsai-2-27B); quant from
+# quant_label. When VRAM is 0/unknown (CPU-only), it says so plainly.
+model_reason() {
+    local _file="$1" _vram="${2:-0}" _params="" _quant
+    _quant="$(quant_label "$_file")"
+    # Parameter count: the number immediately before a trailing 'b' in the
+    # model name (8B, 27B, 1.7B). Take the last such token so
+    # "Ternary-Bonsai-2-27B" reports 27B, not 2.
+    _params="$(printf '%s' "$_file" | grep -oiE '[0-9]+(\.[0-9]+)?b' | tail -1 | tr '[:lower:]' '[:upper:]')"
+    [ -n "$_params" ] || _params="? params"
+    if [ "${_vram:-0}" -gt 0 ] 2>/dev/null; then
+        printf '%s, %s quant - fits your %s GB with room for the KV cache' \
+            "$_params" "$_quant" "$_vram"
+    else
+        printf '%s, %s quant - runs on CPU/system RAM' "$_params" "$_quant"
+    fi
 }
