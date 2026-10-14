@@ -1817,6 +1817,43 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "first-run experience (pre-mortem T1/T2/T6)"
+
+# Pre-mortem launch-blockers, now pinned so they cannot regress.
+# T1: the default start timeout covers a cold first load (was 120s, too short).
+if grep -q 'KILN_START_TIMEOUT:-240' scripts/start-server.sh; then
+    pass "default start timeout is 240s (covers a cold first load)"
+else
+    fail "default start timeout must be 240s" ""
+fi
+# T2: the user is told the first load takes minutes, so silence != hang.
+if grep -qi 'first start takes a few minutes' scripts/start-server.sh; then
+    pass "start sets expectations for the slow first load"
+else
+    fail "start must tell the user the first load takes minutes" ""
+fi
+# T6: fetch pre-checks free disk when the size is known, and the row-parse
+# call sites pass the catalog size through.
+if grep -q 'Not enough disk' scripts/get-models.sh; then
+    pass "fetch pre-checks free disk before downloading"
+else
+    fail "fetch must pre-check free disk" ""
+fi
+# The size flows from the catalog row into fetch at the recommend + picker paths.
+_n_size_passthrough="$(grep -c 'fetch "$_repo" "$_file" "$_size"' scripts/get-models.sh)"
+if [ "$_n_size_passthrough" -ge 3 ]; then
+    pass "catalog size is passed to fetch at every row-parse site"
+else
+    fail "every catalog fetch must pass its size for the disk check" "only $_n_size_passthrough"
+fi
+# The disk-check math: need size+1GB headroom vs free; a big model on a full
+# disk blocks, a small model passes.
+_dc="$(bash -c '
+    f=35.8
+    chk(){ awk -v n="$1" -v f="$f" "BEGIN{exit !(n+1 > f)}" && echo block || echo pass; }
+    chk 2.18; chk 999' 2>/dev/null | tr "\n" " ")"
+assert_eq "disk check passes a small model, blocks a huge one" "pass block " "$_dc"
+
 group "idle sleep (load-on-demand)"
 
 # KILN_SLEEP_IDLE maps to llama.cpp's --sleep-idle-seconds: after N idle

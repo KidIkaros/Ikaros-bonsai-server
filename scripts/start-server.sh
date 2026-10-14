@@ -433,11 +433,16 @@ if [ "$BACKGROUND" = 1 ]; then
     _pid=$!
     printf '%s' "$_pid" > "$STATE_DIR/server.pid"
 
+    # Set expectations before the wait: a first load reads weights and (on GPU)
+    # compiles kernels, which is minutes of silence. Without this line a
+    # first-time user watches a prompt with no output and concludes it hung.
+    dim "Loading the model - the first start takes a few minutes, then it is fast."
+
     # Verify the server actually became healthy before claiming success. A
     # model load can hang indefinitely on a wedged GPU runtime; without this
     # check the caller is told "started" and every request then times out
     # with no explanation. Bounded wait, then a clear failure.
-    _health_timeout="${KILN_START_TIMEOUT:-120}"
+    _health_timeout="${KILN_START_TIMEOUT:-240}"
     info "Waiting up to ${_health_timeout}s for the server to become healthy..."
     _ok=0
     _i=0

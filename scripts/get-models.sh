@@ -138,16 +138,28 @@ recommend() {
 # Download
 # ---------------------------------------------------------------------------
 
-# fetch REPO FILE - download one file into the models directory.
-# Sets FETCH_RESULT to the on-disk path.
+# fetch REPO FILE [SIZE_GB] - download one file into the models directory.
+# Sets FETCH_RESULT to the on-disk path. SIZE_GB, when known, is checked
+# against free disk first so a full SSD fails fast instead of mid-download
+# (which looks like corruption).
 fetch() {
-    _repo="$1" _file="$2"
+    _repo="$1" _file="$2" _size_gb="${3:-}"
     _dest="$(dest_for "$_repo" "$_file")"
     FETCH_RESULT="$_dest"
 
     if [ -f "$_dest" ]; then
         info "Already present: $(basename "$_dest")"
         return 0
+    fi
+
+    # Pre-flight disk check: need the model size plus a little headroom. Only
+    # when the caller told us the size; otherwise skip silently.
+    if [ -n "$_size_gb" ]; then
+        _free_gb="$(df -Pk "$(dirname "$_dest")" 2>/dev/null | awk 'NR==2{printf "%.1f", $4/1048576}')"
+        if [ -n "$_free_gb" ] && awk -v n="$_size_gb" -v f="$_free_gb" 'BEGIN{exit !(n+1 > f)}'; then
+            die "Not enough disk: $_file needs ~${_size_gb} GB but only ${_free_gb} GB free in $(dirname "$_dest").
+       Free up space, or pick a smaller model: ./scripts/get-models.sh --list"
+        fi
     fi
 
     _url="https://huggingface.co/$_repo/resolve/main/$_file"
@@ -325,8 +337,9 @@ case "$MODE" in
         _row="$(row_by_number "$ARG")" || die "No catalog entry number $ARG."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Fetching $_file"
-        fetch "$_repo" "$_file"
+        fetch "$_repo" "$_file" "$_size"
         ;;
 
     recommend)
@@ -335,6 +348,7 @@ case "$MODE" in
         _row="$(row_by_number "$_n")" || die "Recommendation $_n is not a valid entry."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Recommended for this machine"
         printf '  %s%s\n' "$C_DIM" "$_repo"
         printf '%s' "$C_RESET"
@@ -342,7 +356,7 @@ case "$MODE" in
         # Say WHY: param count + quant + VRAM fit, so the choice is legible.
         dim "  $(model_reason "$_file" "${VRAM_GB:-0}")"
         echo ""
-        fetch "$_repo" "$_file"
+        fetch "$_repo" "$_file" "$_size"
         ;;
 
     "")
@@ -373,8 +387,9 @@ case "$MODE" in
         _row="$(row_by_number "$_choice")" || die "No catalog entry number $_choice."
         _repo="$(printf '%s' "$_row" | cut -d'|' -f1)"
         _file="$(printf '%s' "$_row" | cut -d'|' -f2)"
+        _size="$(printf '%s' "$_row" | cut -d'|' -f3)"
         step "Fetching $_file"
-        fetch "$_repo" "$_file"
+        fetch "$_repo" "$_file" "$_size"
         ;;
 esac
 
