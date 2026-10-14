@@ -528,6 +528,7 @@ parsing stderr.
 | `KILN_KV_BIAS_OUT` | `models/kv-mean-center-<model>.gguf` | where `make-kv-bias.sh` writes the bias file |
 | `KILN_CALIB_TOKENS` | `400` | tokens the model generates per seed prompt when building a KV bias |
 | `KILN_MOE_CACHE_MIB` | unset | GPU cache for CPU-resident MoE experts, `+1.5-1.85x` decode (needs a source build; the pinned prebuilt lacks the flag) |
+| `KILN_SLEEP_IDLE` | unset (never) | free VRAM after N idle seconds; the next request wakes and reloads (~2s). `on`=300s, or a number of seconds |
 | `BACKEND` | auto | force `cpu`, `vulkan`, `cuda` or `rocm` |
 | `HF_TOKEN` | unset | for private or gated Hugging Face repos |
 | `HSA_OVERRIDE_GFX_VERSION` | unset | only if your gfx target is not covered |

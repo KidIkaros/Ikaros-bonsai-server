@@ -30,6 +30,8 @@
 #   KILN_MOE_CACHE_MIB=N GPU cache for CPU-resident MoE experts (+1.5-1.85x
 #                           decode, needs a source build; ignored with a warning
 #                           when the installed binary has no --moe-cache-mib)
+#   KILN_SLEEP_IDLE=N|on|off  free VRAM after N idle seconds; the next request
+#                           wakes and reloads (~2s). on=300, off=never (default)
 #   KILN_EXTRA_ARGS="..." extra llama-server flags
 
 set -euo pipefail
@@ -281,6 +283,31 @@ esac
 # shellcheck disable=SC2206
 EXTRA_ARGS=(${KILN_EXTRA_ARGS:-})
 
+# Idle sleep (--sleep-idle-seconds): after N seconds with no request the server
+# frees the model from VRAM and sleeps; the next request wakes it and reloads
+# transparently (measured ~2s on this hardware). This is the native
+# load-on-demand feel - VRAM is returned to the desktop/games when Kiln is
+# idle, with no "keep it running" mental overhead. KILN_SLEEP_IDLE accepts a
+# number of seconds, or on (=300) / off (=-1, the llama.cpp default). Gated on
+# binary support; a build without the flag is left as-is.
+SLEEP_ARGS=()
+if [ -n "${KILN_SLEEP_IDLE:-}" ]; then
+    case "$(printf '%s' "$KILN_SLEEP_IDLE" | tr '[:upper:]' '[:lower:]')" in
+        on)             _sleep_s=300 ;;
+        off|none|never) _sleep_s=-1 ;;
+        ''|*[!0-9-]*)   die "KILN_SLEEP_IDLE must be seconds, or on/off, got '$KILN_SLEEP_IDLE'." ;;
+        *)              _sleep_s="$KILN_SLEEP_IDLE" ;;
+    esac
+    if server_supports --sleep-idle-seconds; then
+        SLEEP_ARGS=(--sleep-idle-seconds "$_sleep_s")
+        if [ "$_sleep_s" -gt 0 ] 2>/dev/null; then
+            info "Idle sleep : after ${_sleep_s}s idle, frees VRAM until the next request"
+        fi
+    else
+        warn "KILN_SLEEP_IDLE set, but this build has no --sleep-idle-seconds."
+    fi
+fi
+
 # MoE expert cache (--moe-cache-mib): keeps hot CPU-resident experts in a GPU
 # cache, worth 1.5-1.85x decode on models split across VRAM and RAM (PR #29887,
 # measured RTX 4090 1.57-1.62x, RTX 5090 1.77x). It is newer than the pinned
@@ -358,6 +385,7 @@ CMD=(
     "${DRAFT_ARGS[@]}"
     "${NGL_ARGS[@]}"
     "${MOE_CACHE_ARGS[@]}"
+    "${SLEEP_ARGS[@]}"
     "${EXTRA_ARGS[@]}"
 )
 

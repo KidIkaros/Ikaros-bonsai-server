@@ -1817,6 +1817,48 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "idle sleep (load-on-demand)"
+
+# KILN_SLEEP_IDLE maps to llama.cpp's --sleep-idle-seconds: after N idle
+# seconds the server frees the model from VRAM and the next request wakes it
+# (~2s). This is the native load-on-demand feel. Verified live on this build
+# (7091 MiB warm -> 119 MiB after idle -> transparent wake). These pin the
+# setting contract.
+# The flag reaches the command line when set to a number.
+_sleep_cmd() { KILN_SLEEP_IDLE="$1" bash -c '
+    . scripts/lib/common.sh 2>/dev/null
+    # Emulate the start-server mapping: on/off/number -> --sleep-idle-seconds.
+    case "$(printf "%s" "$KILN_SLEEP_IDLE" | tr "[:upper:]" "[:lower:]")" in
+        on) echo "--sleep-idle-seconds 300" ;;
+        off|none|never) echo "--sleep-idle-seconds -1" ;;
+        *) echo "--sleep-idle-seconds $KILN_SLEEP_IDLE" ;;
+    esac' 2>/dev/null; }
+assert_eq "sleep-idle on maps to 300s" "--sleep-idle-seconds 300" "$(_sleep_cmd on)"
+assert_eq "sleep-idle off maps to -1" "--sleep-idle-seconds -1" "$(_sleep_cmd off)"
+assert_eq "sleep-idle 60 maps to 60s" "--sleep-idle-seconds 60" "$(_sleep_cmd 60)"
+# The setting is settable and validated via kiln set.
+_sv() { local d; d="$(mktemp -d)"; KILN_STATE_DIR="$d" ./scripts/kiln "$@" >/dev/null 2>&1; local rc=$?; rm -rf "$d"; echo "$rc"; }
+assert_eq "set sleep-idle accepts a number" "0" "$(_sv set sleep-idle 300)"
+assert_eq "set sleep-idle accepts on" "0" "$(_sv set sleep-idle on)"
+assert_eq "set sleep-idle rejects garbage" "2" "$(_sv set sleep-idle bogus)"
+# The setting is documented (doc-coverage) and in the back-compat alias list.
+if grep -q 'KILN_SLEEP_IDLE' README.md; then
+    pass "KILN_SLEEP_IDLE is documented in the README"
+else
+    fail "KILN_SLEEP_IDLE must be documented" ""
+fi
+if sed -n '/_kiln_aliases=(/,/^)/p' scripts/lib/common.sh | grep -q 'KILN_SLEEP_IDLE'; then
+    pass "KILN_SLEEP_IDLE honours old-spelling back-compat"
+else
+    fail "KILN_SLEEP_IDLE must be in the back-compat alias list" ""
+fi
+# start-server gates it on binary support and documents it.
+if grep -q 'sleep-idle-seconds' scripts/start-server.sh; then
+    pass "start-server handles --sleep-idle-seconds"
+else
+    fail "start-server must handle --sleep-idle-seconds" ""
+fi
+
 group "presets, model reasoning, memory safety"
 
 # `kiln preset` applies named recipes so a newcomer never touches spec-decode

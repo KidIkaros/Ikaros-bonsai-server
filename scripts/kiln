@@ -244,8 +244,9 @@ except Exception:
             moe-cache-mib|moe-cache) VAR="KILN_MOE_CACHE_MIB" ;;
             spec-type)   VAR="KILN_SPEC_TYPE" ;;
             spec-stack)  VAR="KILN_SPEC_STACK" ;;
+            sleep-idle|idle-sleep) VAR="KILN_SLEEP_IDLE" ;;
             KILN_*)    VAR="$KEY" ;;
-            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib, spec-type, spec-stack" ;;
+            *) usage_die "Unknown setting '$KEY'. Try: port, ctx, ngl, kv, threads, models, moe-cache-mib, spec-type, spec-stack, sleep-idle" ;;
         esac
 
         case "$VAR" in
@@ -267,6 +268,11 @@ except Exception:
                 case "$VAL" in
                     kiln|upstream) ;;
                     *) usage_die "Unknown spec stack '$VAL'. Allowed: kiln, upstream" ;;
+                esac ;;
+            KILN_SLEEP_IDLE)
+                case "$(printf '%s' "$VAL" | tr '[:upper:]' '[:lower:]')" in
+                    on|off|none|never) ;;
+                    ''|*[!0-9-]*) usage_die "sleep-idle needs seconds, or on/off, got '$VAL'." ;;
                 esac ;;
         esac
 

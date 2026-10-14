@@ -46,6 +46,7 @@ Drive Kiln through the `terminal` tool. The command is `kiln <subcommand>`
 | One-command setup | `./setup.sh` (from a Kiln checkout) |
 | Bring everything up (returning user) | `kiln up` — model + start + wire Hermes |
 | Apply a named recipe | `kiln preset fastest|balanced|low-vram|safe` |
+| Free VRAM when idle (load-on-demand) | `kiln set sleep-idle 300` (or `on`) |
 | Is the server up? | `kiln status` |
 | Start / stop / restart | `kiln start` / `kiln stop` / `kiln restart` |
 | Download a recommended model | `./scripts/get-models.sh --recommend` |
