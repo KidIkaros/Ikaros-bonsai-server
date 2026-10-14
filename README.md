@@ -8,8 +8,8 @@ Clone it, run one command, and you have a server on `http://localhost:8081` that
 Hermes can talk to. No cloud account, no API key, no GPU required.
 
 ```bash
-git clone https://github.com/KidIkaros/Ikaros-ikaros-server.git
-cd Ikaros-ikaros-server
+git clone https://github.com/KidIkaros/Ikaros-bonsai-server.git
+cd Ikaros-bonsai-server
 ./setup.sh
 ```
 

@@ -1573,6 +1573,25 @@ fi
 
 rm -rf "$_ss" "$REPO_ROOT/bin/$_ss_backend"
 
+group "readme clone url"
+
+# The rebrand rewrote "bonsai" -> "ikaros" everywhere, including inside the
+# repo's own clone URL, producing "Ikaros-ikaros-server.git" - a dead link
+# every new user would hit. The README's clone URL must match the git remote,
+# so this asserts the two agree rather than trusting the rename.
+_remote_url="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+_remote_repo="$(printf '%s' "$_remote_url" | sed -n 's#.*github.com[:/]\([^/]*/[^.]*\)\.git.*#\1#p')"
+_readme_clone="$(grep -oE 'git clone https://github.com/[^ ]+\.git' "$REPO_ROOT/README.md" | head -1 | sed 's#.*github.com[:/]##;s#\.git$##')"
+if [ -n "$_remote_repo" ]; then
+    assert_eq "README clone URL matches the git remote" "$_remote_repo" "$_readme_clone"
+    # And the cd line right after must name the same repo, or the user lands
+    # in a directory that does not exist.
+    _readme_cd="$(grep -A1 'git clone https://github.com/' "$REPO_ROOT/README.md" | grep '^cd ' | head -1 | sed 's/^cd //')"
+    assert_eq "README cd line matches the remote repo name" "${_remote_repo##*/}" "$_readme_cd"
+else
+    pass "readme clone url (skipped: no github remote)"
+fi
+
 group "env var back-compat (bonsai -> ikaros rename)"
 
 # The project was renamed bonsai -> ikaros. Every var is now IKAROS_*, but an
