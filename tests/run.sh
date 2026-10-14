@@ -1093,7 +1093,7 @@ group "documentation coverage"
 # tune-result keys the scripts write rather than read, the install-time paths
 # that are not server settings, and the source-build overrides only a
 # contributor building llama.cpp from source would set.
-_doc_internal="KILN_FAKE_ KILN_FROM_ENV KILN_SETTINGS KILN_TUNED_AT KILN_TUNED_BACKEND KILN_STATE_DIR KILN_PREFIX KILN_SRC_DIR KILN_SRC_FORCE KILN_TEST_SRC"
+_doc_internal="KILN_FAKE_ KILN_FROM_ENV KILN_SETTINGS KILN_TUNED_AT KILN_TUNED_BACKEND KILN_STATE_DIR KILN_PREFIX KILN_SRC_DIR KILN_SRC_FORCE KILN_TEST_SRC KILN_SKILL_SRC KILN_SKILL_VERBOSE"
 
 _doc_table() {
     # From the "Environment variables" section onward, take the first column
@@ -1319,10 +1319,14 @@ if grep -q 'bash) _comp_name="kiln"' "$REPO_ROOT/install.sh"; then
 else
     fail "bash completion must be named 'kiln' (no extension) to be auto-sourced"
 fi
-if grep -q 'zsh)  _comp_name="_bonsai"' "$REPO_ROOT/install.sh"; then
-    pass "zsh completion is named _bonsai"
+# zsh's fpath convention names the completion file _<cmd>, so the file must be
+# _kiln. (The internal bash function is _bonsai_completions - a leftover
+# identifier that is harmless because bash keys off the FILE name, not the
+# function name. Only the zsh FILE name matters here.)
+if grep -q 'zsh)  _comp_name="_kiln"' "$REPO_ROOT/install.sh"; then
+    pass "zsh completion is named _kiln"
 else
-    fail "zsh completion must be named _bonsai for the fpath"
+    fail "zsh completion must be named _kiln for the fpath"
 fi
 if grep -q 'fish) _comp_name="kiln.fish"' "$REPO_ROOT/install.sh"; then
     pass "fish completion is named kiln.fish"
@@ -1687,6 +1691,65 @@ if bash -n scripts/kiln-dash.sh 2>/dev/null; then
 else
     fail "kiln-dash.sh must parse" ""
 fi
+
+group "hermes skill install"
+
+# Kiln ships a SKILL.md so the Hermes agent on the install machine learns to
+# drive it. It must be reproducible: setup.sh and install.sh both call the
+# shared scripts/install-hermes-skill.sh, so both routes lay down the identical
+# skill from one implementation. These tests pin the install/uninstall contract
+# using a fake HOME so the real ~/.hermes is never touched.
+_sk_fake="$(mktemp -d)"
+mkdir -p "$_sk_fake/.hermes"
+_sk_dst="$_sk_fake/.hermes/skills/kiln"
+# Install into the fake home.
+HERMES_SKILL_DIR="$_sk_dst" KILN_SKILL_VERBOSE=1 \
+    ./scripts/install-hermes-skill.sh >/dev/null 2>&1
+[ -f "$_sk_dst/SKILL.md" ] && pass "the skill installs SKILL.md" || fail "the skill install must write SKILL.md" ""
+[ -f "$_sk_dst/.installed-by-kiln" ] && pass "the skill install writes an ownership marker" || fail "the skill install must write an ownership marker" ""
+# The installed copy is byte-identical to the repo source.
+if diff -q skills/kiln/SKILL.md "$_sk_dst/SKILL.md" >/dev/null 2>&1; then
+    pass "the installed skill matches the repo source"
+else
+    fail "installed skill must match the repo source" ""
+fi
+# The SKILL.md frontmatter is valid enough for Hermes to load it: byte-0 ---,
+# a name, and a description within the hardline.
+if head -c 3 "$_sk_dst/SKILL.md" | grep -q '^---$'; then
+    pass "the skill starts with a --- frontmatter fence"
+else
+    fail "skill must start with ---" ""
+fi
+if grep -q '^name: kiln$' "$_sk_dst/SKILL.md"; then
+    pass "the skill declares name: kiln"
+else
+    fail "skill must declare name: kiln" ""
+fi
+# Guard: with no ~/.hermes, the script skips AND does not create the dir.
+_sk_nohome="$(mktemp -d)"
+HOME="$_sk_nohome" ./scripts/install-hermes-skill.sh >/dev/null 2>&1
+if [ ! -d "$_sk_nohome/.hermes" ]; then
+    pass "no ~/.hermes means the skill is skipped, not created"
+else
+    fail "must not create ~/.hermes on a machine without it" ""
+fi
+rm -rf "$_sk_nohome"
+# Guard: a missing source skips cleanly (rc 0), never a failed install.
+KILN_SKILL_SRC=/nonexistent/SKILL.md ./scripts/install-hermes-skill.sh >/dev/null 2>&1
+assert_eq "a missing skill source is not a failed install" "0" "$?"
+# Uninstall removes the skill we own (marker present) ...
+rm -f "$_sk_dst/.installed-by-kiln"; printf 'installed by kiln\n' > "$_sk_dst/.installed-by-kiln"
+HOME="$_sk_fake" ./install.sh --prefix "$_sk_fake/local" --uninstall >/dev/null 2>&1
+if [ ! -d "$_sk_dst" ]; then
+    pass "uninstall removes the skill it installed"
+else
+    fail "uninstall must remove the installed skill" ""
+fi
+# ... but leaves a hand-edited skill (no marker) alone.
+mkdir -p "$_sk_dst"; printf 'hand edited\n' > "$_sk_dst/SKILL.md"
+HOME="$_sk_fake" ./install.sh --prefix "$_sk_fake/local" --uninstall >/dev/null 2>&1
+[ -f "$_sk_dst/SKILL.md" ] && pass "uninstall leaves a hand-edited skill alone" || fail "uninstall must leave a hand-edited skill alone" ""
+rm -rf "$_sk_fake"
 
 group "hermes-wire arg parsing"
 

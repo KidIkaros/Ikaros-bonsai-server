@@ -65,6 +65,14 @@ fi
 if [ "$UNINSTALL" = 1 ]; then
     rm -f "$LINK"
     rm -rf "$LIB_DIR"
+    # Remove the Hermes skill we installed, but only the one we own: leave a
+    # hand-edited or unrelated ~/.hermes/skills/kiln alone if the marker file
+    # we wrote is gone.
+    _skill_dst="$HOME/.hermes/skills/kiln/SKILL.md"
+    if [ -f "$HOME/.hermes/skills/kiln/.installed-by-kiln" ]; then
+        rm -rf "$HOME/.hermes/skills/kiln"
+        echo "Removed the Hermes skill (~/.hermes/skills/kiln)"
+    fi
     # state/ holds tuned settings and measured KV costs; only remove it when
     # empty so a reinstall does not silently drop a user's measurements.
     rmdir "$STATE_DIR" 2>/dev/null || true
@@ -132,7 +140,7 @@ if [ -n "$_completion_dir" ] && mkdir -p "$_completion_dir" 2>/dev/null; then
     # <cmd>.fish. Writing the wrong name means the file is never loaded.
     case "$_shell" in
         bash) _comp_name="kiln" ;;
-        zsh)  _comp_name="_bonsai" ;;
+        zsh)  _comp_name="_kiln" ;;
         fish) _comp_name="kiln.fish" ;;
     esac
     if "$LINK" completions "$_shell" > "$_completion_dir/$_comp_name" 2>/dev/null &&
@@ -151,6 +159,16 @@ else
     echo "Tab completion not installed (no writable completion dir found)."
     echo "  Install it by hand: kiln completions <bash|zsh|fish>"
 fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Hermes skill
+# ---------------------------------------------------------------------------
+# Ship a SKILL.md so the Hermes agent on THIS machine learns how to drive
+# kiln. Shared with setup.sh via install-hermes-skill.sh, so both install
+# routes install the same skill from one implementation (no drift). Only acts
+# when ~/.hermes exists; a missing skill is never a failed install.
+KILN_SKILL_VERBOSE=1 "$SELF_DIR/scripts/install-hermes-skill.sh"
 echo ""
 
 # PATH guidance: only warn when the prefix's bin is genuinely absent from it.

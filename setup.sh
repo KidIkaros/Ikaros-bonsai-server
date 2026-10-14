@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh - get a local Bonsai model server running on this machine.
+# setup.sh - get a local Kiln model server running on this machine.
 #
 # Does four things:
 #   1. works out what hardware this is and which backend fits
@@ -79,7 +79,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. What next
+# 4. Teach the local Hermes agent (best-effort, never fatal)
+# ---------------------------------------------------------------------------
+# Same shared script install.sh uses, so both install routes lay down the
+# identical skill from one implementation. Silent unless it succeeds.
+KILN_SKILL_VERBOSE=1 "$SCRIPT_DIR/scripts/install-hermes-skill.sh" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 5. What next
 # ---------------------------------------------------------------------------
 
 echo ""

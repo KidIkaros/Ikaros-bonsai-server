@@ -122,7 +122,7 @@ Then pick the **Kiln** provider in Hermes.
 
 ```bash
 hermes config set --force "providers.local-127\.0\.0\.1:8081.api"           "http://127.0.0.1:8081"
-hermes config set --force "providers.local-127\.0\.0\.1:8081.name"          "Bonsai"
+hermes config set --force "providers.local-127\.0\.0\.1:8081.name"          "Kiln"
 hermes config set --force "providers.local-127\.0\.0\.1:8081.default_model" "<model id>"
 hermes config set --force "model.provider" "local-127.0.0.1:8081"
 hermes config set --force "model.default"  "<model id>"
@@ -137,6 +137,16 @@ contains dots.
 > model. Hermes does this for you. If you call the API directly, pass `"model": "<id>"`
 > or you will get `model name is missing from the request`. List the ids with
 > `curl -s localhost:8081/v1/models`.
+
+### Letting the Hermes agent drive Kiln
+
+Every install (`./setup.sh` or `./install.sh`) also drops a Kiln **skill** into
+`~/.hermes/skills/kiln/SKILL.md`, when `~/.hermes` already exists. That teaches the
+Hermes agent on the machine how to install, start, tune, and wire Kiln on its own —
+so a colleague can just ask Hermes to "run a local model" instead of following these
+steps by hand. It is skipped silently if Hermes is not installed, and `install.sh
+--uninstall` removes only the skill Kiln installed (a hand-edited one is left alone).
+
 
 ## Getting models
 
