@@ -44,6 +44,7 @@ Drive Kiln through the `terminal` tool. The command is `kiln <subcommand>`
 | Task | Command |
 |------|---------|
 | One-command setup | `./setup.sh` (from a Kiln checkout) |
+| Bring everything up (returning user) | `kiln up` — model + start + wire Hermes |
 | Is the server up? | `kiln status` |
 | Start / stop / restart | `kiln start` / `kiln stop` / `kiln restart` |
 | Download a recommended model | `./scripts/get-models.sh --recommend` |
@@ -58,18 +59,23 @@ Drive Kiln through the `terminal` tool. The command is `kiln <subcommand>`
 
 ## Procedure
 
+The fastest path is one command: **`kiln up`** — it ensures a model exists
+(recommending + downloading one for the hardware if none), starts the server,
+and registers it with Hermes. Prefer it for onboarding and for "just get it
+running." The granular steps below are for when the user wants control.
+
 1. **Check state** — run `kiln status`. Completion: it reports the port, server
    state, and GPU. If `kiln` is not found, tell the user to install Kiln first.
-2. **Ensure a model** — run `./scripts/get-models.sh --recommend` if none is
-   installed. Completion: `kiln models` lists at least one model.
-3. **Start** — run `kiln start`. Completion: `kiln status` shows `running` and
-   `kiln speed` returns a tok/s number.
-4. **Tune for speed (optional)** — run `kiln tune`, then `kiln apply` to
+2. **Bring it up** — run `kiln up`. Completion: `kiln status` shows `running`,
+   and `hermes config get providers.local-127.0.0.1:8081.name` returns the
+   provider (Kiln auto-registers; it does NOT force itself active, so the user
+   still picks it in `hermes model`, exactly like any other provider).
+3. **Tune for speed (optional)** — run `kiln tune`, then `kiln apply` to
    persist the winner. Completion: `kiln fastest --json` shows the tuned row
    at the top. Skip if the user just wants it working, not maximally fast.
-5. **Wire Hermes (only if the user wants Hermes to use it)** — run
-   `./scripts/hermes-wire.sh --dry-run` first and show the user the commands,
-   then run it for real. Completion: `hermes config get
+4. **Wire Hermes manually (only if auto-wire was skipped, e.g. no `hermes` CLI
+   at start time)** — run `./scripts/hermes-wire.sh --dry-run` first and show
+   the user the commands, then run it for real. Completion: `hermes config get
    providers.local-127.0.0.1:8081.name` returns the provider name.
 
 ## Pitfalls

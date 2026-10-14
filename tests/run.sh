@@ -1817,6 +1817,50 @@ case "$_hw_ok" in
     *) fail "dry run must report it changed nothing" "$_hw_ok" ;;
 esac
 
+group "hermes synergy (up / auto-wire)"
+
+# The goal: install synergizes with Hermes. `kiln up` is the one command that
+# brings the whole stack up (model + start + wire). These pin the command
+# surface and the conservative auto-wire contract, using --dry-run-style
+# checks and fake state so no real server or Hermes config is touched.
+# `up` is a real command now.
+case "$(./scripts/kiln help 2>&1)" in
+    *"kiln up"*) pass "kiln help documents up" ;;
+    *) fail "kiln help must document up" "" ;;
+esac
+case "$(./scripts/kiln completions bash 2>&1)" in
+    *up*) pass "completions include up" ;;
+    *) fail "completions must include up" "" ;;
+esac
+# A typo of up suggests it (one-edit), same suggester as everything else.
+case "$(./scripts/kiln upp 2>&1)" in
+    *"Did you mean 'up'"*) pass "a one-edit typo of up suggests up" ;;
+    *) fail "upp should suggest up" "" ;;
+esac
+# up takes no flags.
+assert_eq "up rejects an unknown flag" "2" "$(D=$(mktemp -d); KILN_STATE_DIR="$D" ./scripts/kiln up --bad >/dev/null 2>&1; echo $?; rm -rf "$D")"
+# auto_wire_hermes is a silent no-op without the hermes CLI, and never fails
+# its caller: source common.sh with PATH stripped of hermes and confirm rc 0.
+_nw="$(bash -c '
+    . scripts/lib/common.sh
+    # Simulate no hermes on PATH.
+    hermes() { return 127; }
+    command() { if [ "$2" = hermes ]; then return 1; fi; builtin command "$@"; }
+    auto_wire_hermes /nonexistent
+    echo "rc=$?"
+' 2>/dev/null)"
+case "$_nw" in
+    *"rc=0"*) pass "auto_wire_hermes is a no-op (rc 0) without hermes" ;;
+    *) fail "auto_wire_hermes must not fail its caller" "$_nw" ;;
+esac
+# auto_wire_hermes must NOT force the provider active: it calls hermes-wire.sh
+# WITHOUT --make-default. Pin that the primitive never passes --make-default.
+if grep -q 'hermes-wire.sh" >/dev/null' scripts/lib/common.sh && ! grep -q 'auto_wire.*make-default\|hermes-wire.sh.*--make-default' scripts/lib/common.sh; then
+    pass "auto_wire never forces the provider active (no --make-default)"
+else
+    fail "auto_wire must not force the provider active" ""
+fi
+
 group "flag validation (reject unknown flags)"
 
 # Subcommands used to silently accept and ignore unknown flags (kiln status

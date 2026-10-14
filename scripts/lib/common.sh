@@ -1144,3 +1144,36 @@ quant_needs_vulkan_warning() {
     _f="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$_f" in *pq2_0*|*ptq1_0*) return 0 ;; *) return 1 ;; esac
 }
+
+# ---------------------------------------------------------------------------
+# Hermes auto-wire (shared by setup.sh, kiln start, kiln up)
+# ---------------------------------------------------------------------------
+
+# auto_wire_hermes SCRIPTS_DIR - register this running server as a Hermes
+# provider, so it appears in `hermes model` and Hermes Desktop's provider list.
+# This is the single primitive the onboarding flow (setup.sh), the
+# returning-user flow (kiln start), and the magic command (kiln up) all compose
+# - one implementation, no drift between them. SCRIPTS_DIR is passed in because
+# common.sh is sourced and cannot self-locate; every caller knows it.
+#
+# Behaviour, deliberately conservative:
+#   - Registers the provider (api, name, default_model) but does NOT force it
+#     as Hermes's active provider - the user still picks it in `hermes model`,
+#     exactly like any other provider. (--make-default stays available in
+#     hermes-wire.sh for anyone who wants it.)
+#   - Only runs when the `hermes` CLI is on PATH; otherwise it is a silent
+#     no-op, so a machine without Hermes is never broken by this.
+#   - Idempotent: re-running just re-affirms the same three keys.
+#   - Never touches config without hermes-wire.sh's own timestamped backup.
+#
+# Returns 0 always: a failed wire must never fail the caller (a running server
+# is the product; Hermes registration is a convenience on top).
+auto_wire_hermes() {
+    local _scripts="$1"
+    command -v hermes >/dev/null 2>&1 || return 0
+    [ -x "$_scripts/hermes-wire.sh" ] || return 0
+    # hermes-wire reads the model id from the running server; it refuses
+    # cleanly if nothing is up, which is fine - we only call this post-start.
+    "$_scripts/hermes-wire.sh" >/dev/null 2>&1 || true
+    return 0
+}

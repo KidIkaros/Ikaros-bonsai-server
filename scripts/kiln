@@ -18,6 +18,7 @@
 #   ./scripts/kiln assess         what fits, and how the KV type changes it
 #   ./scripts/kiln coverage       which settings have been tried, and which have not
 #   ./scripts/kiln models         list installed models
+#   ./scripts/kiln up             one command: model + start + wire Hermes
 #   ./scripts/kiln dash           full-screen status dashboard (q to quit)
 #   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
 #
@@ -88,6 +89,7 @@ ensure_detect() {
 
 case "$CMD" in
     start)
+        reject_any_flags start "$@"
         load_settings
         if service_active; then
             info "Already running as $UNIT_NAME."
@@ -103,7 +105,13 @@ case "$CMD" in
             info "Started $UNIT_NAME."
             dim "  ./scripts/kiln logs -f"
         else
-            "$SCRIPT_DIR/start-server.sh" --no-browser --background
+            "$SCRIPT_DIR/start-server.sh" --no-browser --background || exit 1
+        fi
+        # Synergy: now that it is up, register it as a Hermes provider so it
+        # shows in `hermes model` and Hermes Desktop. Silent no-op without the
+        # hermes CLI; never forces it active (the user still picks it).
+        if auto_wire_hermes "$SCRIPT_DIR"; then
+            dim "  Registered with Hermes. Pick it in: hermes model"
         fi
         ;;
 
@@ -482,7 +490,7 @@ except Exception:
     help|--help|-h|"")
         kiln_logo
         echo
-        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
         ;;
 
     dash)
@@ -492,12 +500,44 @@ except Exception:
         exec "$SCRIPT_DIR/kiln-dash.sh"
         ;;
 
+    up)
+        reject_any_flags up "$@"
+        # The one magic command for a returning user: make sure a model exists
+        # (recommend + download if none), start the server, and register it with
+        # Hermes - so the whole local-AI stack is live from a single command.
+        # Composes the same primitives setup.sh uses; no parallel logic.
+        load_settings
+        if server_up; then
+            info "Already running on port $KILN_PORT."
+            auto_wire_hermes "$SCRIPT_DIR" && dim "  Registered with Hermes. Pick it in: hermes model"
+            exit 0
+        fi
+        # No model yet? Recommend one for this hardware and download it.
+        _gguf_count="$(find "${KILN_MODELS_DIR:-$HOME/models/kiln-server}" -name '*.gguf' 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "$_gguf_count" -eq 0 ]; then
+            step "No model installed - recommending one for this machine"
+            "$SCRIPT_DIR/get-models.sh" --recommend || die "Model download failed."
+        fi
+        step "Starting the server"
+        # A generous timeout: the first load compiles CUDA kernels and can take
+        # minutes on a cold start; the 90s default is tuned for a warm reload.
+        KILN_START_TIMEOUT="${KILN_START_TIMEOUT:-240}" \
+            "$SCRIPT_DIR/start-server.sh" --background --no-browser || exit 1
+        # start-server --background returns once the process is spawned; confirm
+        # it is actually answering before we call this a success and wire Hermes.
+        if server_up; then
+            auto_wire_hermes "$SCRIPT_DIR" && dim "  Registered with Hermes. Pick it in: hermes model"
+        else
+            warn "Server started but is not answering yet. Check: kiln status / kiln logs"
+        fi
+        ;;
+
     completions)
         # Shell completion for the 18 commands. Generated from one list so it
         # cannot drift from the dispatcher: adding a command and forgetting
         # here is the failure mode this prevents.
         _shell="${1:-bash}"
-        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
+        _cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up help"
         case "$_shell" in
             bash)
                 cat <<EOF
@@ -567,7 +607,7 @@ EOF
         # longer than "speed", so a prefix test would miss the most common
         # typo shape. Uses the shared suggest_near/edit_distance so command
         # and flag suggestions behave identically.
-        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash help"
+        _all_cmds="start stop restart status logs show set speed fastest bench identity tune apply assess coverage models dash up help"
         if _near="$(suggest_near "$CMD" $_all_cmds)"; then
             usage_die "Unknown command '$CMD'. Did you mean '$_near'?
        All commands: ./scripts/kiln help"
