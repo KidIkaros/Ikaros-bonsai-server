@@ -533,7 +533,8 @@ parsing stderr.
 | `KILN_NGL` | `99` | GPU layers |
 | `KILN_KV_TYPE` | `q8_0` | KV cache type: `q8_0`, `q5_0`, `q4_0`, `iq4_nl`, `f16` to disable |
 | `KILN_KV_TYPE_K` / `_V` | follow `KILN_KV_TYPE` | set the two halves independently; `_V` alone quantizes only the value cache (measured near-lossless, unlike quantizing K) |
-| `KILN_MODELS_DIR` | `./models` | where models are stored |
+| `KILN_MODELS_DIR` | `~/models/kiln-server` | where models are stored (outside the repo, so the checkout stays lean) |
+| `KILN_BIN_DIR` | `~/.local/share/kiln/bin` | where backend binaries live (outside the repo; downloaded on first run) |
 | `KILN_THREADS` | all logical cores | CPU threads; measured as noise under full GPU offload, the largest lever on CPU-only or partial-offload |
 | `KILN_EXTRA_ARGS` | unset | extra `llama-server` flags, e.g. `--ubatch-size 256` |
 | `KILN_SPEC_DRAFT_P_MIN` | `0.0` | draft probability floor (disabled); `0.8` lets deeper `n-max` pay off on some hardware |

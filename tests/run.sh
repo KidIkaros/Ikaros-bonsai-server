@@ -1130,7 +1130,7 @@ group "documentation coverage"
 # tune-result keys the scripts write rather than read, the install-time paths
 # that are not server settings, and the source-build overrides only a
 # contributor building llama.cpp from source would set.
-_doc_internal="KILN_FAKE_ KILN_FROM_ENV KILN_SETTINGS KILN_TUNED_AT KILN_TUNED_BACKEND KILN_STATE_DIR KILN_PREFIX KILN_SRC_DIR KILN_SRC_FORCE KILN_TEST_SRC KILN_SKILL_SRC KILN_SKILL_VERBOSE"
+_doc_internal="KILN_FAKE_ KILN_FROM_ENV KILN_SETTINGS KILN_TUNED_AT KILN_TUNED_BACKEND KILN_STATE_DIR KILN_PREFIX KILN_SRC_DIR KILN_SRC_FORCE KILN_TEST_SRC KILN_SKILL_SRC KILN_SKILL_VERBOSE KILN_DATA_HOME"
 
 _doc_table() {
     # From the "Environment variables" section onward, take the first column
@@ -1605,6 +1605,7 @@ fi
 # --- Case 4: KILN_HOST override reaches the command line.
 : > "$_ss/argv.txt"
 KILN_ARGV_OUT="$_ss/argv.txt" KILN_HOST=0.0.0.0 \
+KILN_BIN_DIR="$REPO_ROOT/bin" \
 KILN_STATE_DIR="$_ss/state" KILN_MODELS_DIR="$_ss/models" \
 KILN_PORT=18183 KILN_START_TIMEOUT=3 \
     "$SCRIPTS/start-server.sh" --background --no-browser >/dev/null 2>&1 || true

@@ -74,11 +74,18 @@ for _v in $_KILN_SETTINGS; do
     if [ -n "${!_v+set}" ]; then _KILN_FROM_ENV="$_KILN_FROM_ENV $_v"; fi
 done
 
-STATE_DIR="${KILN_STATE_DIR:-$REPO_ROOT/.state}"
-BIN_DIR="$REPO_ROOT/bin"
+# Runtime data lives OUTSIDE the repo by default, in both run modes, so the
+# checkout stays a lean source tree (a few hundred KB) and never accumulates
+# gigabytes of model weights or binaries. Previously these defaulted into
+# $REPO_ROOT, so `du` on the repo showed 2+ GB of downloaded models. The
+# installed mode (install.sh) already did this; now repo mode matches it.
+# KILN_STATE_DIR / KILN_MODELS_DIR still override either way.
+_KILN_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kiln"
+STATE_DIR="${KILN_STATE_DIR:-$_KILN_DATA_HOME/state}"
+BIN_DIR="${KILN_BIN_DIR:-$_KILN_DATA_HOME/bin}"
 # Exported so the per-script globals stay visible to shellcheck and to any
 # child process that needs them.
-MODELS_DIR="${KILN_MODELS_DIR:-$REPO_ROOT/models}"
+MODELS_DIR="${KILN_MODELS_DIR:-$HOME/models/kiln-server}"
 export MODELS_DIR STATE_DIR BIN_DIR
 
 # Pinned upstream release. Bump PRISM_RELEASE and PRISM_COMMIT together.
