@@ -194,6 +194,14 @@ fi
 # #203: accepted, zero log lines, draft_n null, decode identical to none), it is
 # explicitly removed here so the measured MTP path is what runs. KILN_SPEC_STACK
 # overrides both sides for users who want the upstream stack.
+# emit_spec_args - the ONE stage that turns speculative-decoding config into
+# llama-server flags. Every spec decision (the optional separate drafter, the
+# default-off rule, the ngram-mod removal, the backend-tuned draft window,
+# validation, and emission) lives here, so the feature is a single composable
+# pipeline stage instead of state scattered through the launch path. It
+# populates the global DRAFT_ARGS and resolves KILN_SPEC_TYPE /
+# KILN_SPEC_DRAFT_N_MAX, which the status line reads back.
+emit_spec_args() {
 DRAFT_ARGS=()
 if [ -n "${KILN_DRAFT_MODEL:-}" ]; then
     [ -f "$KILN_DRAFT_MODEL" ] ||
@@ -263,6 +271,7 @@ if [ -n "${KILN_SPEC_TYPE:-}" ] && [ "${_KILN_FROM_ENV:-}" != *"KILN_SPEC_DRAFT_
     # A backend-tuned default, only when the caller did not set one: on Vulkan
     # n-max 2 measured fastest, on ROCm/CUDA n-max 2 measured slower than the
     # baseline, so the value that ships is the measured winner per backend.
+    local _nmax
     _nmax="$(spec_nmax_for "$BACKEND")"
     [ "$_nmax" -gt 0 ] && KILN_SPEC_DRAFT_N_MAX="$_nmax"
 fi
@@ -286,6 +295,9 @@ if [ -n "${KILN_SPEC_TYPE:-}" ]; then
         fi
     fi
 fi
+}
+
+emit_spec_args
 
 # Only pass --n-gpu-layers when there is actually a GPU backend in play.
 NGL_ARGS=()
