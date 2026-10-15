@@ -213,7 +213,20 @@ settings_set() {
     mkdir -p "$STATE_DIR"
     local _k="$1" _v="$2" _tmp="${SETTINGS_FILE}.set"
     touch "$SETTINGS_FILE" 2>/dev/null || : > "$SETTINGS_FILE"
-    grep -v "^${_k}=" "$SETTINGS_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
+    # Supersede the pre-rebrand spellings of the same setting, not just the
+    # canonical key. Writing KILN_CTX while a stale BONSAI_CTX line remained
+    # left two live-looking values in service.env (BONSAI_CTX=65536 alongside
+    # KILN_CTX=32768), so `kiln show` printed both and the user could not tell
+    # which was in effect. Drop every spelling of this setting, then write the
+    # canonical one. The alias map is the single source of which old names mean
+    # the same thing.
+    local _suffix="${_k#KILN_}"
+    awk -v k="$_k" -v suf="$_suffix" '
+        $0 ~ "^" k "="            { next }
+        $0 ~ "^IKAROS_" suf "="   { next }
+        $0 ~ "^BONSAI_" suf "="   { next }
+        { print }
+    ' "$SETTINGS_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
     printf '%s=%s\n' "$_k" "$_v" >> "$_tmp"
     mv "$_tmp" "$SETTINGS_FILE"
 }

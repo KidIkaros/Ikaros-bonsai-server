@@ -57,7 +57,19 @@ settings_write() {
     local _var="$1" _val="$2" _tmp
     _tmp="$SETTINGS_FILE.tmp"
     if [ -f "$SETTINGS_FILE" ]; then
-        grep -v "^$_var=" "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
+        # Supersede the pre-rebrand spellings of the same setting, not just the
+        # canonical key. Writing KILN_CTX while a stale BONSAI_CTX line remained
+        # left two live-looking values in service.env (BONSAI_CTX=65536 next to
+        # KILN_CTX=32768), so `kiln show` printed both and the user could not
+        # tell which was in effect. Drop every spelling, then write the
+        # canonical one. Matches settings_set in lib/common.sh.
+        local _suffix="${_var#KILN_}"
+        awk -v k="$_var" -v suf="$_suffix" '
+            $0 ~ "^" k "="            { next }
+            $0 ~ "^IKAROS_" suf "="   { next }
+            $0 ~ "^BONSAI_" suf "="   { next }
+            { print }
+        ' "$SETTINGS_FILE" > "$_tmp" || : > "$_tmp"
     else
         {
             printf '# Settings for the Kiln local model server.\n'
@@ -235,15 +247,31 @@ except Exception:
         if [ -f "$SETTINGS_FILE" ]; then
             dim "  from $SETTINGS_FILE"
             echo ""
-            grep -v '^#' "$SETTINGS_FILE" | grep -v '^$' | sed 's/^/  /'
+            # Show the EFFECTIVE values under canonical KILN_* names, not a raw
+            # dump of the file. The file may carry pre-rebrand BONSAI_*/IKAROS_*
+            # spellings (the alias layer resolves them), and a raw dump printed
+            # both a stale BONSAI_CTX and a fresh KILN_CTX - two live-looking
+            # values for one setting, with no way to tell which is in effect.
+            # settings_set now supersedes the old spelling on write, so the file
+            # converges to KILN_*; this display stays correct either way by
+            # reading the resolved variables.
+            printf '    %-18s %s\n' \
+                "KILN_PORT"          "${KILN_PORT:-8081}" \
+                "KILN_CTX"           "${KILN_CTX:-}" \
+                "KILN_NGL"           "${KILN_NGL:-}" \
+                "KILN_KV_TYPE"       "${KILN_KV_TYPE:-}" \
+                "KILN_MODELS_DIR"    "${KILN_MODELS_DIR:-}" \
+                "KILN_SPEC_TYPE"     "${KILN_SPEC_TYPE:-none}" \
+                "KILN_SPEC_DRAFT_N_MAX" "${KILN_SPEC_DRAFT_N_MAX:-}" \
+                "KILN_THREADS"       "${KILN_THREADS:-}"
         else
             dim "  No settings file yet; defaults are in use."
             dim "  ./scripts/install-service.sh  writes one, or use ./scripts/kiln set"
         fi
         echo ""
-        dim "  Effective values:"
-        printf '    %-18s %s\n' "port" "$KILN_PORT" "context" "$KILN_CTX" \
-            "gpu layers" "$KILN_NGL" "kv type" "$(kv_type_effective)" >&2
+        dim "  Effective values (after alias resolution):"
+        printf '    port=%s  context=%s  kv=%s\n' \
+            "$KILN_PORT" "$KILN_CTX" "$(kv_type_effective)" >&2
         ;;
 
     set)
