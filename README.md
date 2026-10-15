@@ -97,6 +97,16 @@ Rough hardware guidance:
 
 `setup.sh` picks for you and tells you what it chose.
 
+> **On AMD, Vulkan is the default and it is the right default here.** It is
+> measured faster than HIP/ROCm on RDNA4 and needs no ROCm install at all:
+> on an RX 9060 XT (gfx1200), the same 1.7B at 65536 context ran **302 tok/s
+> on Vulkan vs 40 on ROCm** (~7.6x), and the upstream llama.cpp RDNA4
+> scoreboard agrees (Vulkan ahead on every model). That ordering is
+> **RDNA4-measured** — on a different AMD card ROCm may win. Both are
+> auto-detected, so force either with `BACKEND=rocm` / `BACKEND=vulkan`, and
+> settle it on your machine with `./scripts/kiln bench <model>` (writes a row)
+> then `./scripts/kiln fastest` (fastest first, this backend only).
+
 > **Read this before picking a model.** At the 65536-token context Hermes requires, the
 > **KV cache is usually the biggest consumer of VRAM, not the weights** - 9 GB on the
 > 8B before any quantization. This project therefore quantizes it by default
@@ -324,9 +334,13 @@ Turing/Ampere, +15% on Vulkan, +6% on ROCm), then the KV cache type (a few
 percent). The first two are applied for you:
 
 - `start-server.sh` keeps `-ngl 99`, the full offload.
-- When the models directory holds a `*-mtp.gguf`, `draft-mtp` is switched on
-  automatically and the draft window is picked per backend (Vulkan 2, ROCm and
-  CUDA 1) - the measured winner on each. Override with `KILN_SPEC_TYPE=none`.
+- The MTP speculative head is **opt-in**, not automatic. `--spec-type` is a
+  global llama-server flag with no per-model override in the pinned prebuilt,
+  so a router-wide `draft-mtp` breaks every non-MTP model in a mixed directory
+  (verified: they 500 on load). Default is therefore off; set
+  `KILN_SPEC_TYPE=draft-mtp` when your served models are `*-mtp.gguf`. When
+  set, the draft window is picked per backend (Vulkan 2, ROCm and CUDA 1) -
+  the measured winner on each.
 - llama.cpp's own default spec type, `ngram-mod`, is removed first with
   `--no-spec-type ngram-mod`: `--spec-type` is additive upstream, and on the
   PrismML ternary models `ngram-mod` silently no-ops (accepted, no log output,
