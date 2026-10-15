@@ -221,12 +221,26 @@ mtp_file_for_router() {
     printf '%s' "${_fat:-$_lean}"
 }
 
+# Speculative decoding type. IMPORTANT: --spec-type is a global llama-server
+# launch flag with no per-request/per-model override in the pinned prebuilt, so
+# it applies to EVERY model the router loads on demand. draft-mtp requires the
+# loaded model to actually contain an MTP head; a model without one fails hard
+# ("context type MTP requested but model doesn't contain MTP layers"), so
+# auto-enabling it because *some* *-mtp.gguf exists in the dir would break every
+# non-MTP model in a mixed dir (the common case for a fresh install).
+#
+# Therefore the default is OFF: non-MTP models always load cleanly. MTP is
+# explicit opt-in via KILN_SPEC_TYPE=draft-mtp, which is safe when the models
+# you serve are MTP models. The router-wide auto-enable that used to live here
+# was removed for exactly this reason (verified: 1.7B 500'd on load whenever an
+# MTP file was present).
 if [ -z "${KILN_SPEC_TYPE:-}" ]; then
-    _mtp_file="$(mtp_file_for_router)"
-    if [ -n "$_mtp_file" ]; then
-        KILN_SPEC_TYPE="draft-mtp"
-        info "MTP head found in $(basename "$_mtp_file"); enabling draft-mtp."
+    if [ -n "$(mtp_file_for_router)" ]; then
+        dim "  MTP file present, but spec decoding stays off by default: a"
+        dim "  global draft-mtp flag breaks non-MTP models in router mode."
+        dim "  Set KILN_SPEC_TYPE=draft-mtp to enable it for MTP models."
     fi
+    KILN_SPEC_TYPE="none"
 fi
 
 # --spec-type is additive to the upstream default (ngram-mod, PR #28391), so
@@ -489,9 +503,23 @@ if [ "$BACKGROUND" = 1 ]; then
                 err "then retry; reboot if it persists."
                 break
             fi
-            # Any other failure (e.g. the first model does not fit VRAM) is a
-            # warning, not a start failure: the server is up and another model
-            # may serve fine.
+            if [ "$_deep_rc" = 22 ]; then
+                # curl 22 = the server answered with an HTTP error (a 500 on a
+                # model that will not load). This is deterministic, not transient:
+                # a global spec flag or a too-large model makes EVERY request for
+                # this model fail. Reporting "healthy" here means the user's first
+                # real request 500s and they blame the server. Fail the start and
+                # surface the reason instead. (The body carries "failed to load".)
+                err "Server is up but the model '$_deep_model' will not load"
+                err "(HTTP 500). This is deterministic - it will fail every request,"
+                err "not just the startup probe. Common causes: a global"
+                err "KILN_SPEC_TYPE the model does not support (draft-mtp needs an"
+                err "*-mtp.gguf), or a model that does not fit VRAM."
+                break
+            fi
+            # Any other failure (e.g. a transient blip the next retry would
+            # clear) is a warning, not a start failure: the server is up and
+            # another model may serve fine.
             warn "Startup generation check failed (curl rc=$_deep_rc); the server is"
             warn "up but the default model may not load. Other models may serve fine."
             _ok=1
