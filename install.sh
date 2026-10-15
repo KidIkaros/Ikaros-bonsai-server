@@ -185,4 +185,4 @@ case ":$PATH:" in
         ;;
 esac
 echo ""
-echo "First run: kiln detect   (then: kiln start)"
+echo "First run: kiln status   (then: kiln start)"

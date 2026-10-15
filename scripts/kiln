@@ -1,27 +1,33 @@
 #!/usr/bin/env bash
 # kiln - one command to run and manage the local model server.
 #
+# EVERYDAY - these three cover almost all use:
+#   ./scripts/kiln status         what is running, on which port, with what loaded
 #   ./scripts/kiln start          start it (service if installed, else background)
 #   ./scripts/kiln stop
+#
 #   ./scripts/kiln restart        apply settings changes
-#   ./scripts/kiln status         what is running, on which port, with what loaded
 #   ./scripts/kiln logs [-f]      follow the log
-#   ./scripts/kiln show           the current settings
+#   ./scripts/kiln show           the current settings (canonical names)
 #   ./scripts/kiln set ctx 32768  change a setting
+#   ./scripts/kiln models         list installed models
+#   ./scripts/kiln up             one command: model + start + wire Hermes
+#   ./scripts/kiln preset <name>  apply a recipe (fastest, balanced, low-vram, safe)
+#   ./scripts/kiln dash           full-screen status dashboard (q to quit)
+#
+# MEASUREMENT - how fast, and what fits (advanced tuning):
 #   ./scripts/kiln speed          quick tokens/sec check against the running server
 #   ./scripts/kiln fastest        every measured configuration, fastest first
 #   ./scripts/kiln fastest --json same, as machine-readable JSON
 #   ./scripts/kiln bench [model]  measure a model on this machine, one row
-#   ./scripts/kiln identity [model]  is the MTP draft lossless on this backend?
 #   ./scripts/kiln tune           find the fastest settings on this machine
 #   ./scripts/kiln apply          persist the last tune's winner to settings
 #   ./scripts/kiln assess         what fits, and how the KV type changes it
 #   ./scripts/kiln coverage       which settings have been tried, and which have not
-#   ./scripts/kiln models         list installed models
-#   ./scripts/kiln up             one command: model + start + wire Hermes
-#   ./scripts/kiln preset <name>  apply a named recipe (fastest, balanced, low-vram, safe)
+#   ./scripts/kiln identity [model]  is the MTP draft lossless on this backend?
+#
+# OTHER:
 #   ./scripts/kiln report [path]  write a shareable diagnostic bundle (no upload)
-#   ./scripts/kiln dash           full-screen status dashboard (q to quit)
 #   ./scripts/kiln completions bash|zsh|fish   print shell tab-completion
 #
 # Settings live in .state/service.env. Editing it, or using `set`, is enough:
@@ -599,7 +605,11 @@ except Exception:
     help|--help|-h|"")
         kiln_logo
         echo
-        sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+        # Print the whole header comment (lines that start with '#'), not a
+        # hardcoded range: the grouped help grew past the old 2,26 cutoff and
+        # silently dropped the MEASUREMENT/OTHER commands (identity, report,
+        # completions) from the output. Stop at the first non-comment line.
+        awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
         ;;
 
     dash)

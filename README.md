@@ -29,10 +29,13 @@ shell:
 
 ```bash
 ./install.sh                  # installs to ~/.local
-kiln detect                 # what hardware was found, which backend
-kiln start                  # first run downloads the binary + a model
-kiln status
+kiln status                  # what hardware was found, which backend, what's running
+kiln start                   # first run downloads the binary + a model
 ```
+
+`kiln status` is the one command to run first: it reports the detected GPU and
+backend, so you know what Kiln will use before anything loads. (The raw probe is
+`./scripts/detect.sh --json` if you ever need the machine-readable detail.)
 
 `./install.sh --prefix /opt/kiln` installs elsewhere, `--status` shows what is
 installed, `--uninstall` removes it. Re-run `install.sh` from a newer checkout to
