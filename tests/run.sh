@@ -80,15 +80,17 @@ field() {
 
 group "backend selection"
 
+# AMD no longer auto-selects ROCm: Vulkan is the only auto backend (measured
+# faster on RDNA4, no ROCm install). An AMD box with ROCm but NO Vulkan runtime
+# therefore falls through to CPU, not ROCm. (ROCm stays forceable via BACKEND=rocm.)
 OUT="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
     KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
     KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
     KILN_FAKE_ROCM_GFX=gfx1200 KILN_FAKE_VRAM_BYTES=17179869184 \
     KILN_FAKE_VULKAN=0)"
-assert_eq "AMD + ROCm 7.2, no Vulkan -> rocm backend" "rocm" "$(field BACKEND "$OUT")"
-assert_eq "AMD + ROCm 7.2 -> rocm 7.2 asset" \
-    "llama-prism-b10772-e8fd209-bin-ubuntu-rocm-7.2-x64.tar.gz" "$(field ASSET "$OUT")"
-assert_eq "gfx1200 is a covered target" "1" "$(field GFX_SUPPORTED "$OUT")"
+assert_eq "AMD + ROCm, no Vulkan -> cpu (ROCm not auto-selected)" "cpu" "$(field BACKEND "$OUT")"
+assert_eq "AMD, no Vulkan -> cpu asset" \
+    "llama-prism-b10772-e8fd209-bin-ubuntu-x64.tar.gz" "$(field ASSET "$OUT")"
 
 # On RDNA4, Vulkan is measured faster than ROCm, so an AMD box that HAS a
 # Vulkan runtime should prefer it even when ROCm is present. (Verified on
@@ -101,11 +103,13 @@ assert_eq "AMD + ROCm + Vulkan -> vulkan backend" "vulkan" "$(field BACKEND "$OU
 assert_eq "AMD + Vulkan -> vulkan asset" \
     "llama-prism-b10772-e8fd209-bin-ubuntu-vulkan-x64.tar.gz" "$(field ASSET "$OUT")"
 
-OUT="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
+# gfx-coverage gating now only runs on the manually-forced ROCm path (AMD no
+# longer auto-selects ROCm). Force it so the gfx check itself is still tested.
+OUT="$(detect_with BACKEND=rocm KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
     KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
     KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
     KILN_FAKE_ROCM_GFX=gfx906 KILN_FAKE_VULKAN=0)"
-assert_eq "uncovered gfx target is flagged" "0" "$(field GFX_SUPPORTED "$OUT")"
+assert_eq "uncovered gfx target is flagged (forced rocm)" "0" "$(field GFX_SUPPORTED "$OUT")"
 
 OUT="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
     KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
@@ -1848,27 +1852,24 @@ if grep -A3 'quant_needs_vulkan_warning "$_file"' scripts/get-models.sh | grep -
 else
     fail "the warning must name a safer quant" ""
 fi
-# Backend priority on AMD: when a Vulkan runtime is present, Vulkan is
-# preferred (measured faster on RDNA4); ROCm remains the fallback for AMD
-# boxes without Vulkan. Assert the behavior through detect, not source order,
-# so the intent survives refactors of the candidate walk.
-if grep -q 'BACKEND="rocm"' scripts/detect.sh && grep -q 'BACKEND="vulkan"' scripts/detect.sh; then
-    _amd_both="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
-        KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
-        KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
-        KILN_FAKE_ROCM_GFX=gfx1200 KILN_FAKE_VULKAN=1)"
-    _amd_novk="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
-        KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
-        KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
-        KILN_FAKE_ROCM_GFX=gfx1200 KILN_FAKE_VULKAN=0)"
-    if [ "$(field BACKEND "$_amd_both")" = "vulkan" ] && [ "$(field BACKEND "$_amd_novk")" = "rocm" ]; then
-        pass "AMD prefers Vulkan when present, ROCm as fallback"
-    else
-        fail "AMD backend preference is wrong" \
-            "both=$(field BACKEND "$_amd_both") novk=$(field BACKEND "$_amd_novk")"
-    fi
+# Backend priority on AMD: Vulkan is the ONLY auto-selected backend (measured
+# faster than ROCm on RDNA4, needs no ROCm install). ROCm is no longer an AMD
+# fallback — an AMD box with no Vulkan runtime goes to CPU. ROCm stays forceable
+# via BACKEND=rocm. Assert the behavior through detect, not source order, so the
+# intent survives refactors of the candidate walk.
+_amd_both="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
+    KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
+    KILN_FAKE_ROCM_GFX=gfx1200 KILN_FAKE_VULKAN=1)"
+_amd_novk="$(detect_with KILN_FAKE_UNAME_S=Linux KILN_FAKE_UNAME_M=x86_64 \
+    KILN_FAKE_LSPCI="$FIXTURES/lspci-amd.txt" \
+    KILN_FAKE_ROCM_PREFIX=/opt/rocm-7.2.3 KILN_FAKE_ROCM_VERSION=7.2.3 \
+    KILN_FAKE_ROCM_GFX=gfx1200 KILN_FAKE_VULKAN=0)"
+if [ "$(field BACKEND "$_amd_both")" = "vulkan" ] && [ "$(field BACKEND "$_amd_novk")" = "cpu" ]; then
+    pass "AMD uses Vulkan when present, CPU (not ROCm) otherwise"
 else
-    fail "detect must assign both rocm and vulkan backends" ""
+    fail "AMD backend preference is wrong" \
+        "both=$(field BACKEND "$_amd_both") novk=$(field BACKEND "$_amd_novk")"
 fi
 
 group "diagnostic error log + report"

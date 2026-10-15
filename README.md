@@ -76,7 +76,7 @@ downloading PrismML's official prebuilt binaries.
 | Built-in chat UI | `http://localhost:8081` |
 | Router mode | switch models live, no restart |
 | Context window | 65536 tokens by default, which is what Hermes needs |
-| Backends | ROCm/HIP, CUDA, Vulkan, CPU - auto-detected |
+| Backends | Vulkan, CUDA, CPU - auto-detected (ROCm forceable via `BACKEND=rocm`) |
 | Model catalog | official PrismML models plus curated community fine-tunes |
 
 ## Requirements
@@ -92,7 +92,7 @@ Rough hardware guidance:
 
 | Your machine | Backend | Sensible model |
 |---|---|---|
-| AMD GPU, ROCm 7.2+, 12 GB+ | HIP | 27B `PQ2_0` (~11 GB) |
+| AMD GPU (Vulkan), 12 GB+ | Vulkan | 27B `PQ2_0` (~11 GB) |
 | NVIDIA GPU, 12 GB+ | CUDA | 27B `PQ2_0` (~11 GB) |
 | GPU with 8 GB | either | 8B `PQ2_0` (~7 GB) |
 | Any Vulkan 1.2+ GPU | Vulkan | 8B `PQ2_0`, or `Q2_0_g64` for the 27B |
@@ -100,15 +100,15 @@ Rough hardware guidance:
 
 `setup.sh` picks for you and tells you what it chose.
 
-> **On AMD, Vulkan is the default and it is the right default here.** It is
-> measured faster than HIP/ROCm on RDNA4 and needs no ROCm install at all:
-> on an RX 9060 XT (gfx1200), the same 1.7B at 65536 context ran **302 tok/s
-> on Vulkan vs 40 on ROCm** (~7.6x), and the upstream llama.cpp RDNA4
-> scoreboard agrees (Vulkan ahead on every model). That ordering is
-> **RDNA4-measured** — on a different AMD card ROCm may win. Both are
-> auto-detected, so force either with `BACKEND=rocm` / `BACKEND=vulkan`, and
-> settle it on your machine with `./scripts/kiln bench <model>` (writes a row)
-> then `./scripts/kiln fastest` (fastest first, this backend only).
+> **On AMD, Vulkan is the only auto-selected backend.** It is measured faster
+> than HIP/ROCm on RDNA4 and needs no ROCm install at all: on an RX 9060 XT
+> (gfx1200), the same 1.7B at 65536 context ran **302 tok/s on Vulkan vs 40 on
+> ROCm** (~7.6x), and the upstream llama.cpp RDNA4 scoreboard agrees (Vulkan
+> ahead on every model). ROCm is therefore no longer auto-detected on AMD — an
+> AMD box with no Vulkan runtime falls back to CPU. If you specifically want
+> ROCm (e.g. a non-RDNA4 card where it may win), force it with `BACKEND=rocm`,
+> and settle the question on your machine with `./scripts/kiln bench <model>`
+> (writes a row) then `./scripts/kiln fastest` (fastest first, this backend only).
 
 > **Read this before picking a model.** At the 65536-token context Hermes requires, the
 > **KV cache is usually the biggest consumer of VRAM, not the weights** - 9 GB on the
