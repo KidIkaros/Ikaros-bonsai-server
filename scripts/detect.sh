@@ -272,9 +272,20 @@ else
         fi
     fi
 
+    # On AMD, Vulkan (radv) is measured faster than HIP/ROCm on RDNA4 and needs
+    # no ROCm install at all, so prefer it when a Vulkan runtime is present and
+    # a prebuilt exists; fall back to ROCm (and its gfx gating) otherwise.
+    # Measured on RX 9060 XT (gfx1200): 1.7B Q1_0 @ 65536 = 302 tok/s Vulkan vs
+    # 40 tok/s ROCm; 27B PTQ1_0 = 55 vs 51. The upstream llama.cpp RDNA4
+    # scoreboard agrees (Vulkan ahead on every model). BACKEND=rocm still forces
+    # ROCm for users who want it.
+    if [ -z "$BACKEND" ] && [ "$GPU_VENDOR" = "amd" ] && _has_vulkan && [ -n "$(asset_for vulkan)" ]; then
+        BACKEND="vulkan"; BACKEND_REASON="AMD GPU, Vulkan preferred over ROCm (faster on RDNA4)"
+    fi
+
     if [ -z "$BACKEND" ] && [ -n "$ROCM_PREFIX" ] && [ "$GPU_VENDOR" = "amd" ] && [ -n "$(asset_for rocm)" ]; then
         if version_ge "${ROCM_VERSION:-0}" "7.2"; then
-            BACKEND="rocm"; BACKEND_REASON="AMD GPU with ROCm $ROCM_VERSION"
+            BACKEND="rocm"; BACKEND_REASON="AMD GPU with ROCm $ROCM_VERSION (no Vulkan runtime)"
         else
             warn "ROCm ${ROCM_VERSION:-unknown} found; the pinned prebuilt targets ROCm 7.2."
             warn "Build from source for a matching HIP build: ./scripts/build-from-source.sh"
