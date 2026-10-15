@@ -1372,7 +1372,7 @@ _fj_probe() {
 }
 _fj_probe cuda 'speed_set "m-lean.gguf" 65536 q4_0 46.1 cuda prism-b10772-e8fd209 36 0.74'
 _fj_probe cuda 'speed_set baseline.gguf 65536 q8_0 40.0 cuda prism-b10772-e8fd209 36'
-_fj_out="$(KILN_STATE_DIR="$_fj" "$SCRIPTS/kiln" fastest --json 2>/dev/null || true)"
+_fj_out="$(KILN_STATE_DIR="$_fj" BACKEND="cuda" "$SCRIPTS/kiln" fastest --json 2>/dev/null || true)"
 if command -v python3 >/dev/null 2>&1; then
     if printf '%s' "$_fj_out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
         pass "fastest --json parses as JSON"
